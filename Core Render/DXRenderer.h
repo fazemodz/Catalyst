@@ -3,28 +3,31 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <directxmath.h>
+#include <vector>
+#include <string>
+#include <wrl.h>
+#include <DirectXCollision.h> 
+
+#include "../Scene/Camera.h"
+#include "../Scene/GameObject.h"
+#include "../UI/UIManager.h"
+#include "../Resources/Mesh.h"
+using Microsoft::WRL::ComPtr;
 
 using Microsoft::WRL::ComPtr;
 
-extern bool g_Keys[256];
-extern bool g_RightMouseDown;
-extern int g_MouseDeltaX;
-extern int g_MouseDeltaY;
-
-struct Vertex {
-    DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT4 color;
-};
-
 class DXRenderer {
 public:
-    void Initialize(HWND hwnd);
+    void Initialize(HWND hwnd, int width, int height);
     void Render();
-    void FlushGPU();
     void Shutdown();
 
 private:
     static const uint8_t FrameCount = 2;
+    static const int MAX_OBJECTS = 100;
+
+    int m_width, m_height;
+
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<IDXGISwapChain3> m_swapChain;
@@ -33,33 +36,37 @@ private:
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
 
+    ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+    ComPtr<ID3D12Resource> m_depthBuffer;
+    
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
-    
-    // Geometry Resources
-    ComPtr<ID3D12Resource> m_vertexBuffer;
-    D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
-    ComPtr<ID3D12Resource> m_indexBuffer;      // <--- NEW
-    D3D12_INDEX_BUFFER_VIEW m_indexBufferView;  // <--- NEW
+
+    // --- REPLACED: Raw buffers removed, replaced by Mesh object ---
+    Mesh* m_cubeMesh = nullptr;
 
     struct ConstantBufferData {
         DirectX::XMMATRIX wvpMatrix;
+        DirectX::XMFLOAT4 colorOverride;
     };
     ComPtr<ID3D12Resource> m_constantBuffer;
-    ConstantBufferData m_cbData;
     UINT8* m_pCbvDataBegin = nullptr;
 
-    // Camera
-    DirectX::XMFLOAT3 m_cameraPos = { 0.0f, 0.0f, -4.0f }; // Moved back a bit
-    float m_yaw = 0.0f;
-    float m_pitch = 0.0f;
+    std::vector<GameObject> m_gameObjects;
+    int m_selectedObjectIndex = -1;
+
+    Camera m_camera;
+    UIManager m_ui; 
 
     ComPtr<ID3D12Fence> m_fence;
     HANDLE m_fenceEvent;
     uint64_t m_fenceValue = 0;
     uint32_t m_frameIndex = 0;
 
+    void PickObject(int mouseX, int mouseY);
+    void CreateDepthBuffer();
     void CreateGraphicsPipeline();
-    void CreateCubeMesh(); // <--- Renamed from CreateTriangleMesh
+    void CreateCubeMesh(); // Now uses the Mesh class internally
     void CreateConstantBuffer();
+    void FlushGPU();
 };

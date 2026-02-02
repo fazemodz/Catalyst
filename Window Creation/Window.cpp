@@ -1,65 +1,113 @@
 #include "Window.h"
+#include <windowsx.h> // For GET_X_LPARAM macros
+#include "../imgui.h" // Adjust path to where your imgui.h is
 
-// Input Globals
+// ----------------------------------------------------------------------
+// GLOBAL INPUT VARIABLES (Linked to DXRenderer)
+// ----------------------------------------------------------------------
 bool g_Keys[256] = { false };
 bool g_RightMouseDown = false;
 int g_MouseDeltaX = 0;
 int g_MouseDeltaY = 0;
-static POINT lastMousePos;
+int g_LastMouseX = 0;
+int g_LastMouseY = 0;
 
-bool Window::Initialize(int width, int height, const wchar_t* title) {
-    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_HREDRAW | CS_VREDRAW, WindowProc, 0, 0, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"DX12WindowClass", nullptr };
-    RegisterClassEx(&wc);
+// ----------------------------------------------------------------------
+// IMGUI FORWARD DECLARATION
+// ----------------------------------------------------------------------
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-    m_hwnd = CreateWindow(wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width, height, nullptr, nullptr, wc.hInstance, this);
-    if (!m_hwnd) return false;
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // 1. PASS INPUT TO IMGUI
+    // If ImGui wants the mouse/keyboard, we let it handle it and return true.
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+        return true;
 
-    ShowWindow(m_hwnd, SW_SHOW);
-    m_isOpen = true;
-    return true;
-}
+    switch (msg) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
 
-void Window::ProcessMessages() {
-    MSG msg;
-    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-        if (msg.message == WM_QUIT) m_isOpen = false;
-    }
-}
-LRESULT CALLBACK Window::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
+        // --- KEYBOARD INPUT (WASD) ---
     case WM_KEYDOWN:
-        g_Keys[wParam] = true;
+        if (wParam < 256) g_Keys[wParam] = true;
+        if (wParam == VK_ESCAPE) PostQuitMessage(0);
         return 0;
     case WM_KEYUP:
-        g_Keys[wParam] = false;
+        if (wParam < 256) g_Keys[wParam] = false;
         return 0;
+
+        // --- MOUSE INPUT (Camera Rotation) ---
     case WM_RBUTTONDOWN:
         g_RightMouseDown = true;
-        GetCursorPos(&lastMousePos);
-        SetCapture(hwnd);
-        ShowCursor(FALSE); // Hide cursor while looking around
+        g_LastMouseX = GET_X_LPARAM(lParam);
+        g_LastMouseY = GET_Y_LPARAM(lParam);
+        ShowCursor(FALSE); // Hide cursor when rotating
         return 0;
     case WM_RBUTTONUP:
         g_RightMouseDown = false;
-        ReleaseCapture();
         ShowCursor(TRUE);
         return 0;
     case WM_MOUSEMOVE:
         if (g_RightMouseDown) {
-            POINT currentPos;
-            GetCursorPos(&currentPos);
-            g_MouseDeltaX = currentPos.x - lastMousePos.x;
-            g_MouseDeltaY = currentPos.y - lastMousePos.y;
-                
-            // Keep the mouse locked in place so it doesn't hit screen edges
-            SetCursorPos(lastMousePos.x, lastMousePos.y);
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            g_MouseDeltaX = x - g_LastMouseX;
+            g_MouseDeltaY = y - g_LastMouseY;
+            g_LastMouseX = x;
+            g_LastMouseY = y;
         }
         return 0;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+bool Window::Initialize(int width, int height, std::wstring title) {
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.lpszClassName = L"DX12EngineClass";
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW); // Make sure we have a visible cursor
+    RegisterClass(&wc);
+
+    // Adjust window size so client area matches requested width/height
+    RECT rect = { 0, 0, width, height };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+
+    m_hwnd = CreateWindowEx(
+        0, L"DX12EngineClass", title.c_str(),
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        rect.right - rect.left, rect.bottom - rect.top,
+        nullptr, nullptr, wc.hInstance, nullptr
+    );
+
+    if (!m_hwnd) return false;
+
+    ShowWindow(m_hwnd, SW_SHOW);
+    return true;
+}
+
+void Window::ProcessMessages() {
+    MSG msg = {};
+    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) {
+            m_isOpen = false;
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+}
+
+bool Window::IsOpen() const {
+    return m_isOpen;
+}
+
+HWND Window::GetHandle() const {
+    return m_hwnd;
+}
+
+Window::~Window() {
+    // Optional cleanup
 }

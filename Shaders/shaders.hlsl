@@ -1,5 +1,6 @@
 cbuffer SceneData : register(b0) {
-    float4x4 wvpMatrix; // World-View-Projection combined
+    float4x4 wvpMatrix;
+    float4 colorOverride; // NEW: Added this
 };
 
 struct PSInput {
@@ -9,12 +10,12 @@ struct PSInput {
 
 PSInput VSMain(float4 position : POSITION, float4 color : COLOR) {
     PSInput result;
-    // Standard multiplication order for DirectX (Row-Major)
     result.position = mul(position, wvpMatrix);
-    result.color = color;
+    result.color = color; // Pass vertex color through
     return result;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET {
-    return input.color;
+    // Multiply vertex color (gradient) by object color (tint)
+    return input.color * colorOverride;
 }
