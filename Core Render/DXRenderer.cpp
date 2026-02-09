@@ -1,6 +1,8 @@
 #include "DXRenderer.h"
 #include <d3dcompiler.h>
-#include <stdexcept>
+#include <iostream>
+#include <DirectXCollision.h> 
+#include "../Resources/ModelLoader.h"
 
 using namespace DirectX;
 
@@ -20,30 +22,21 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     ComPtr<IDXGIFactory4> factory;
     ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
 
-    HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
-    if (FAILED(hr)) throw std::runtime_error("Failed to create D3D12 Device");
+    ThrowIfFailed(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device)));
 
     D3D12_COMMAND_QUEUE_DESC qDesc = {};
     qDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    qDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    qDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    qDesc.NodeMask = 0;
-
     ThrowIfFailed(m_device->CreateCommandQueue(&qDesc, IID_PPV_ARGS(&m_commandQueue)));
 
     DXGI_SWAP_CHAIN_DESC1 scDesc = {};
     scDesc.Width = width;
     scDesc.Height = height;
     scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scDesc.Stereo = FALSE;
     scDesc.SampleDesc = { 1, 0 };
     scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scDesc.BufferCount = FrameCount;
-    scDesc.Scaling = DXGI_SCALING_STRETCH;
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-    scDesc.Flags = 0;
-
+    
     ComPtr<IDXGISwapChain1> sc1;
     ThrowIfFailed(factory->CreateSwapChainForHwnd(m_commandQueue.Get(), hwnd, &scDesc, nullptr, nullptr, &sc1));
     sc1.As(&m_swapChain);
@@ -51,6 +44,7 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameCount };
     ThrowIfFailed(m_device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap)));
+    
     uint32_t rtvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (int i = 0; i < FrameCount; i++) {
@@ -68,29 +62,58 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
 
     CreateDepthBuffer();
     CreateGraphicsPipeline();
-    CreateCubeMesh(); // Creates the Mesh object
     CreateConstantBuffer();
+    CreateDefaultTexture(); 
+
+    // --- CREATE PRIMITIVES ---
+    m_primitives["Cube"]     = PrimitiveGenerator::CreateCube(m_device.Get());
+    m_primitives["Sphere"]   = PrimitiveGenerator::CreateSphere(m_device.Get());
+    m_primitives["Plane"]    = PrimitiveGenerator::CreatePlane(m_device.Get());
+    m_primitives["Cylinder"] = PrimitiveGenerator::CreateCylinder(m_device.Get());
 
     m_ui.Initialize(hwnd, m_device.Get(), m_commandQueue.Get(), FrameCount);
+    m_ui.SetPrimitives(m_primitives); 
+
+    // FIX: Increased Far Clip to 5000 so the scene doesn't disappear
+    float aspectRatio = (float)width / (float)height;
+    m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f);
+
+    // Initial Scene
+    m_gameObjects.push_back({ "Floor", {0, -0.5f, 0}, {0,0,0}, {1,1,1}, {0.3f, 0.3f, 0.3f, 1}, m_primitives["Plane"], nullptr, nullptr, ObjectType::Mesh });
+    m_gameObjects.push_back({ "Sun Light", {0, 10, 0}, {1.57f, 0, 0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Light, 1.5f });
+}
+
+void DXRenderer::OnResize(int width, int height) {
+    if (width == 0 || height == 0) return;
+    FlushGPU();
+    m_width = width;
+    m_height = height;
+
+    for (int i = 0; i < FrameCount; ++i) m_renderTargets[i].Reset();
+    m_depthBuffer.Reset();
+
+    ThrowIfFailed(m_swapChain->ResizeBuffers(FrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0));
+    m_frameIndex = 0;
+
+    uint32_t rtvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (int i = 0; i < FrameCount; i++) {
+        ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])));
+        m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
+        rtvHandle.ptr += rtvSize;
+    }
+    CreateDepthBuffer();
 
     float aspectRatio = (float)width / (float)height;
-    m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 100.0f);
-
-    // --- SCENE SETUP WITH MESHES ---
-    // Note: We pass m_cubeMesh to the objects now
-    m_gameObjects.push_back({ "Floor",   {0, -1.0f, 0}, {0,0,0}, {10, 0.2f, 10}, {0.3f, 0.3f, 0.3f, 1}, m_cubeMesh });
-    m_gameObjects.push_back({ "Cube A",  {0, 0, 0},     {0,0,0}, {1,1,1},        {1, 0, 0, 1},       m_cubeMesh });
-    m_gameObjects.push_back({ "Cube B",  {2, 0, 0},     {0,0,0}, {1,1,1},        {0, 1, 0, 1},       m_cubeMesh });
+    m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f); // Fix resize clip too
 }
 
 void DXRenderer::Render() {
-    m_camera.Update();
+    m_camera.Update(0.016f); 
 
     if (ImGui::IsMouseClicked(0)) {
         if (!ImGui::GetIO().WantCaptureMouse) {
-            POINT pt;
-            GetCursorPos(&pt);
-            ScreenToClient(GetActiveWindow(), &pt);
+            POINT pt; GetCursorPos(&pt); ScreenToClient(GetActiveWindow(), &pt);
             PickObject(pt.x, pt.y);
         }
     }
@@ -123,19 +146,29 @@ void DXRenderer::Render() {
     const float clear[] = { 0.1f, 0.1f, 0.1f, 1.0f };
     m_commandList->ClearRenderTargetView(rtv, clear, 0, nullptr);
     m_commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     UINT objSize = (sizeof(ConstantBufferData) + 255) & ~255;
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = m_constantBuffer->GetGPUVirtualAddress();
 
+    // Find Active Light
+    DirectX::XMFLOAT3 activeLightDir = { 0, -1, 0 };
+    float activeIntensity = 0.0f;
+
+    for (const auto& obj : m_gameObjects) {
+        if (obj.type == ObjectType::Light) {
+            XMMATRIX lightRot = XMMatrixRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z);
+            XMVECTOR forwardVar = XMVector3TransformCoord(XMVectorSet(0, 0, 1, 0), lightRot);
+            XMStoreFloat3(&activeLightDir, forwardVar);
+            activeIntensity = obj.lightIntensity;
+            break; 
+        }
+    }
+
     for (int i = 0; i < m_gameObjects.size() && i < MAX_OBJECTS; i++) {
         GameObject& obj = m_gameObjects[i];
-        
-        // Skip if this object has no mesh assigned
         if (!obj.mesh) continue;
 
-        // --- BIND MESH BUFFERS ---
         D3D12_VERTEX_BUFFER_VIEW vbv = obj.mesh->GetVertexView();
         D3D12_INDEX_BUFFER_VIEW ibv = obj.mesh->GetIndexView();
         m_commandList->IASetVertexBuffers(0, 1, &vbv);
@@ -146,15 +179,29 @@ void DXRenderer::Render() {
         XMMATRIX mTrans = XMMatrixTranslation(obj.position.x, obj.position.y, obj.position.z);
         XMMATRIX mWorld = mScale * mRot * mTrans;
         XMMATRIX wvp = XMMatrixTranspose(mWorld * mView * mProj);
+        XMMATRIX worldTransposed = XMMatrixTranspose(mWorld);
 
         ConstantBufferData cbData;
         cbData.wvpMatrix = wvp;
+        cbData.worldMatrix = worldTransposed;
         cbData.colorOverride = obj.color;
-        memcpy(m_pCbvDataBegin + (i * objSize), &cbData, sizeof(cbData));
-
-        m_commandList->SetGraphicsRootConstantBufferView(0, cbAddress + (i * objSize));
         
-        // DRAW USING MESH COUNT
+        cbData.lightDir = activeLightDir;
+        // If it's the light gizmo itself, make it bright (Unlit)
+        cbData.lightIntensity = (obj.type == ObjectType::Light) ? 1.0f : activeIntensity;
+        cbData.cameraPos = m_camera.GetPosition();
+
+        memcpy(m_pCbvDataBegin + (i * objSize), &cbData, sizeof(cbData));
+        m_commandList->SetGraphicsRootConstantBufferView(0, cbAddress + (i * objSize));
+
+        // Texture Binding (Albedo)
+        Texture* textureToBind = obj.texture ? obj.texture : m_defaultTexture;
+        if (textureToBind && textureToBind->GetSRVHeap()) {
+            ID3D12DescriptorHeap* heaps[] = { textureToBind->GetSRVHeap() };
+            m_commandList->SetDescriptorHeaps(1, heaps);
+            m_commandList->SetGraphicsRootDescriptorTable(1, textureToBind->GetGPUHandle());
+        }
+
         m_commandList->DrawIndexedInstanced(obj.mesh->GetIndexCount(), 1, 0, 0, 0);
     }
 
@@ -172,16 +219,20 @@ void DXRenderer::Render() {
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 }
 
+void DXRenderer::CreateDefaultTexture() {
+    m_defaultTexture = new Texture();
+    try { m_defaultTexture->Load("Assets/white.png", m_device.Get(), m_commandQueue.Get()); }
+    catch (...) { m_defaultTexture->Create1x1Color(m_device.Get(), m_commandQueue.Get(), 0xFFFFFFFF); }
+}
+
 void DXRenderer::PickObject(int mouseX, int mouseY) {
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
     
     float ndcX = (2.0f * mouseX) / m_width - 1.0f;
     float ndcY = -((2.0f * mouseY) / m_height - 1.0f);
-
     XMVECTOR nearPoint = XMVectorSet(ndcX, ndcY, 0.0f, 1.0f);
     XMVECTOR farPoint  = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
-
     XMVECTOR rayOrigin = XMVector3Unproject(nearPoint, 0, 0, m_width, m_height, 0.0f, 1.0f, proj, view, XMMatrixIdentity());
     XMVECTOR rayEnd    = XMVector3Unproject(farPoint,  0, 0, m_width, m_height, 0.0f, 1.0f, proj, view, XMMatrixIdentity());
     XMVECTOR rayDir    = XMVector3Normalize(rayEnd - rayOrigin);
@@ -191,18 +242,14 @@ void DXRenderer::PickObject(int mouseX, int mouseY) {
 
     for (int i = 0; i < m_gameObjects.size(); i++) {
         GameObject& obj = m_gameObjects[i];
-        BoundingOrientedBox obb;
+        DirectX::BoundingOrientedBox obb; // Needs <DirectXCollision.h>
         obb.Center = obj.position;
         obb.Extents = { obj.scale.x / 2.0f, obj.scale.y / 2.0f, obj.scale.z / 2.0f };
-        XMVECTOR quat = XMQuaternionRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z);
-        XMStoreFloat4(&obb.Orientation, quat);
+        XMStoreFloat4(&obb.Orientation, XMQuaternionRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z));
 
         float dist;
         if (obb.Intersects(rayOrigin, rayDir, dist)) {
-            if (dist < closestDist) {
-                closestDist = dist;
-                hitIndex = i;
-            }
+            if (dist < closestDist) { closestDist = dist; hitIndex = i; }
         }
     }
     m_selectedObjectIndex = hitIndex;
@@ -220,7 +267,8 @@ void DXRenderer::FlushGPU() {
 void DXRenderer::Shutdown() {
     FlushGPU();
     m_ui.Shutdown();
-    delete m_cubeMesh; // Clean up the mesh
+    for (auto& pair : m_primitives) delete pair.second;
+    delete m_defaultTexture;
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
 }
 
@@ -257,20 +305,59 @@ void DXRenderer::CreateGraphicsPipeline() {
     D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err);
     if (err) OutputDebugStringA((char*)err->GetBufferPointer());
     D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG, 0, &ps, nullptr);
+
+    // INPUT LAYOUT: Updated with TANGENT (5 elements)
     D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
-    D3D12_ROOT_PARAMETER rp = {};
-    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rp.Descriptor.ShaderRegister = 0;
-    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = { 1, &rp, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT };
+
+    D3D12_ROOT_PARAMETER rp[2];
+    
+    // 0: Constant Buffer
+    rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rp[0].Descriptor.ShaderRegister = 0;
+    rp[0].Descriptor.RegisterSpace = 0;
+    rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // 1: Texture Table (Range = 2 to support Albedo + Normal later)
+    D3D12_DESCRIPTOR_RANGE range;
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range.NumDescriptors = 2; // <--- Increased to 2 slots
+    range.BaseShaderRegister = 0;
+    range.RegisterSpace = 0;
+    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rp[1].DescriptorTable.NumDescriptorRanges = 1;
+    rp[1].DescriptorTable.pDescriptorRanges = &range;
+    rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 2;
+    rsDesc.pParameters = rp;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
     ComPtr<ID3DBlob> sig;
     D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr);
     m_device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.InputLayout = { layout, 2 };
+    pso.InputLayout = { layout, 5 }; // Updated Count to 5
     pso.pRootSignature = m_rootSignature.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
@@ -288,30 +375,6 @@ void DXRenderer::CreateGraphicsPipeline() {
     pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     pso.SampleDesc.Count = 1;
     m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pipelineState));
-}
-
-void DXRenderer::CreateCubeMesh() {
-    // 1. Create Mesh Object
-    m_cubeMesh = new Mesh();
-
-    // 2. Define Cube Geometry
-    std::vector<Vertex> verts = {
-        { { -0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f, 1.0f, 1.0f } },
-        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 1.0f, 0.0f, 1.0f } },
-        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 1.0f, 1.0f, 1.0f } },
-        { { -0.5f,  0.5f,  0.5f }, { 1.0f, 0.0f, 1.0f, 1.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 1.0f, 1.0f, 1.0f } },
-        { {  0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f, 0.0f, 1.0f } }
-    };
-    std::vector<uint16_t> indices = {
-        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 4, 5, 1, 4, 1, 0,
-        3, 2, 6, 3, 6, 7, 1, 5, 6, 1, 6, 2, 4, 0, 3, 4, 3, 7
-    };
-
-    // 3. Upload to GPU
-    m_cubeMesh->Initialize(m_device.Get(), verts, indices);
 }
 
 void DXRenderer::CreateConstantBuffer() {

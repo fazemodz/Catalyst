@@ -1,73 +1,96 @@
+#define NOMINMAX
 #include "Camera.h"
-#include <algorithm> // For min/max clamping
-#include <windows.h> // For input keys
+#include "imgui.h" // We need to check if UI is blocking us
+#include <algorithm>
 
-// Access Global Input from Window.cpp
-extern bool g_Keys[256];
-extern bool g_RightMouseDown;
-extern int g_MouseDeltaX;
-extern int g_MouseDeltaY;
-using namespace std;
 using namespace DirectX;
 
-Camera::Camera() {
-    m_pos = { 0.0f, 0.0f, -5.0f };
-    m_pitch = 0.0f;
-    m_yaw = 0.0f;
-    m_moveSpeed = 0.1f;         // Adjust speed here
-    m_lookSensitivity = 0.002f; // Adjust sensitivity here
+Camera::Camera() : m_position(0, 0, -5), m_rotation(0, 0, 0), m_isFlying(false) {
+    m_lastMousePos = { 0, 0 };
 }
 
 void Camera::SetProjection(float fovDegrees, float aspectRatio, float nearZ, float farZ) {
-    m_fovRadians = XMConvertToRadians(fovDegrees);
-    m_aspectRatio = aspectRatio;
-    m_nearZ = nearZ;
-    m_farZ = farZ;
+    float fovRadians = fovDegrees * (3.14159f / 180.0f);
+    m_projectionMatrix = XMMatrixPerspectiveFovLH(fovRadians, aspectRatio, nearZ, farZ);
 }
 
-void Camera::Update() {
-    // 1. Handle Rotation (Mouse)
-    if (g_RightMouseDown) {
-        m_yaw += g_MouseDeltaX * m_lookSensitivity;
-        m_pitch += g_MouseDeltaY * m_lookSensitivity;
-        
-        // Reset Delta so it doesn't keep spinning if we stop moving
-        g_MouseDeltaX = 0;
-        g_MouseDeltaY = 0;
+void Camera::Update(float deltaTime) {
+    // 1. Check if we should enter "Fly Mode"
+    // We only fly if Right Click is held AND we aren't hovering a UI window (unless we are already flying)
+    bool rightClickDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    bool uiBlocking = ImGui::GetIO().WantCaptureMouse;
 
-        // Clamp Pitch so we can't look upside down (like in FPS games)
-        // 1.55 radians is roughly 89 degrees
-        m_pitch = max(-1.55f, min(1.55f, m_pitch));
+    if (rightClickDown && (!uiBlocking || m_isFlying)) {
+        if (!m_isFlying) {
+            // Just started flying: Capture initial mouse position
+            GetCursorPos(&m_lastMousePos);
+            m_isFlying = true;
+            ShowCursor(FALSE); // Hide cursor
+        }
+
+        // 2. Handle Rotation (Mouse Look)
+        POINT currentMousePos;
+        GetCursorPos(&currentMousePos);
+
+        float dx = static_cast<float>(currentMousePos.x - m_lastMousePos.x);
+        float dy = static_cast<float>(currentMousePos.y - m_lastMousePos.y);
+
+        // Sensitivity
+        float sensitivity = 0.002f;
+        m_rotation.y += dx * sensitivity; // Yaw
+        m_rotation.x += dy * sensitivity; // Pitch
+
+        // Clamp Pitch (Prevent backflip)
+        m_rotation.x = std::max(-1.5f, std::min(1.5f, m_rotation.x));
+
+        // Reset Cursor to center of "last pos" to prevent hitting screen edge (Infinite Scroll)
+        SetCursorPos(m_lastMousePos.x, m_lastMousePos.y);
+
+        // 3. Handle Movement (WASD)
+        float speed = 5.0f * deltaTime;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) speed *= 2.0f; // Sprint
+
+        XMVECTOR pos = XMLoadFloat3(&m_position);
+        XMVECTOR forward = XMVectorSet(0, 0, 1, 0);
+        XMVECTOR right = XMVectorSet(1, 0, 0, 0);
+        XMVECTOR up = XMVectorSet(0, 1, 0, 0);
+
+        // Rotate movement vectors by Camera Yaw
+        XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_rotation.x, m_rotation.y, 0);
+        forward = XMVector3TransformCoord(forward, rotationMatrix);
+        right = XMVector3TransformCoord(right, rotationMatrix);
+
+        if (GetAsyncKeyState('W') & 0x8000) pos += forward * speed;
+        if (GetAsyncKeyState('S') & 0x8000) pos -= forward * speed;
+        if (GetAsyncKeyState('D') & 0x8000) pos += right * speed;
+        if (GetAsyncKeyState('A') & 0x8000) pos -= right * speed;
+        if (GetAsyncKeyState('E') & 0x8000) pos += up * speed;
+        if (GetAsyncKeyState('Q') & 0x8000) pos -= up * speed;
+
+        XMStoreFloat3(&m_position, pos);
+    } 
+    else {
+        // Stop flying
+        if (m_isFlying) {
+            m_isFlying = false;
+            ShowCursor(TRUE); // Show cursor
+        }
     }
 
-    // 2. Handle Movement (WASD)
-    if (g_RightMouseDown) { // Only move when right click is held (Editor Style)
-        XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(m_pitch, m_yaw, 0.0f);
-        XMVECTOR forward = XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), rotMat);
-        XMVECTOR right = XMVector3TransformNormal(XMVectorSet(1, 0, 0, 0), rotMat);
-        XMVECTOR up = XMVectorSet(0, 1, 0, 0); // World Up
+    // 4. Update View Matrix
+    XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_rotation.x, m_rotation.y, m_rotation.z);
+    XMVECTOR pos = XMLoadFloat3(&m_position);
+    XMVECTOR target = XMVector3TransformCoord(XMVectorSet(0, 0, 1, 0), rotationMatrix);
+    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
 
-        XMVECTOR currentPos = XMLoadFloat3(&m_pos);
-
-        if (g_Keys['W']) currentPos += forward * m_moveSpeed;
-        if (g_Keys['S']) currentPos -= forward * m_moveSpeed;
-        if (g_Keys['D']) currentPos += right * m_moveSpeed;
-        if (g_Keys['A']) currentPos -= right * m_moveSpeed;
-        if (g_Keys['E']) currentPos += up * m_moveSpeed;   // Fly Up
-        if (g_Keys['Q']) currentPos -= up * m_moveSpeed;   // Fly Down
-
-        XMStoreFloat3(&m_pos, currentPos);
-    }
+    // LookAt(Position, Position + Forward, Up)
+    m_viewMatrix = XMMatrixLookAtLH(pos, pos + target, up);
 }
 
 DirectX::XMMATRIX Camera::GetViewMatrix() const {
-    XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(m_pitch, m_yaw, 0.0f);
-    XMVECTOR forward = XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), rotMat);
-    XMVECTOR pos = XMLoadFloat3(&m_pos);
-    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-    return XMMatrixLookToLH(pos, forward, up);
+    return m_viewMatrix;
 }
 
 DirectX::XMMATRIX Camera::GetProjectionMatrix() const {
-    return XMMatrixPerspectiveFovLH(m_fovRadians, m_aspectRatio, m_nearZ, m_farZ);
+    return m_projectionMatrix;
 }

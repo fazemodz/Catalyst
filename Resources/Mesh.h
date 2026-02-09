@@ -11,7 +11,9 @@ using Microsoft::WRL::ComPtr;
 struct Vertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT4 color;
-    // Later we will add Normals (lighting) and UVs (textures) here
+    DirectX::XMFLOAT2 uv; 
+    DirectX::XMFLOAT3 normal;
+    DirectX::XMFLOAT3 tangent;
 };
 
 class Mesh {

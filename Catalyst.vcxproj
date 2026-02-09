@@ -133,8 +133,12 @@
     <ClInclude Include="Error Handler\Common.h" />
     <ClInclude Include="Lib\imgui\ImGuizmo.h" />
     <ClInclude Include="Resources\Mesh.h" />
+    <ClInclude Include="Resources\ModelLoader.h" />
+    <ClInclude Include="Resources\PrimitiveGenerator.h" />
+    <ClInclude Include="Resources\Texture.h" />
     <ClInclude Include="Scene\Camera.h" />
     <ClInclude Include="Scene\GameObject.h" />
+    <ClInclude Include="UI\Theme.h" />
     <ClInclude Include="UI\UIManager.h" />
     <ClInclude Include="Window Creation\Window.h" />
   </ItemGroup>
@@ -152,6 +156,9 @@
     <ClCompile Include="main.cpp" />
     <None Include="Shaders\shaders.hlsl" />
     <ClCompile Include="Resources\Mesh.cpp" />
+    <ClCompile Include="Resources\ModelLoader.cpp" />
+    <ClCompile Include="Resources\PrimitiveGenerator.cpp" />
+    <ClCompile Include="Resources\Texture.cpp" />
     <ClCompile Include="Scene\Camera.cpp">
       <RuntimeLibrary>MultiThreadedDebugDll</RuntimeLibrary>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -230,8 +237,12 @@
       <LinkCompiled>true</LinkCompiled>
     </ClCompile>
     <ClCompile Include="Scene\GameObject.cpp" />
+    <ClCompile Include="UI\Theme.cpp" />
     <ClCompile Include="UI\UIManager.cpp" />
     <ClCompile Include="Window Creation\Window.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Assets\" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

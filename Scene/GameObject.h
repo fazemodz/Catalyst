@@ -1,14 +1,24 @@
 #pragma once
-#include <string>
 #include <directxmath.h>
-#include "../Resources/Mesh.h" 
+#include <string>
+#include "../Resources/Mesh.h"
+#include "../Resources/Texture.h"
+
+enum class ObjectType { Mesh, Light };
 
 struct GameObject {
     std::string name;
-    DirectX::XMFLOAT3 position = { 0, 0, 0 };
-    DirectX::XMFLOAT3 rotation = { 0, 0, 0 };
-    DirectX::XMFLOAT3 scale = { 1, 1, 1 };
-    DirectX::XMFLOAT4 color = { 1, 1, 1, 1 };
+    
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT3 rotation;
+    DirectX::XMFLOAT3 scale;
+    
+    DirectX::XMFLOAT4 color;
+    
+    Mesh* mesh = nullptr;
+    Texture* texture = nullptr;
+    Texture* normalMap = nullptr; // <--- NEW: Second Texture Slot
 
-    Mesh* mesh = nullptr; 
+    ObjectType type = ObjectType::Mesh; 
+    float lightIntensity = 1.0f; 
 };

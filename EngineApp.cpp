@@ -1,16 +1,48 @@
 #include "EngineApp.h"
+#include "imgui.h"
 
-// Define the Width and Height here so we can pass them to both Window and Renderer
-const int SCREEN_WIDTH = 1280;
-const int SCREEN_HEIGHT = 720;
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+DXRenderer* g_Renderer = nullptr;
 
-void EngineApp::Run() {
-    if (!m_window.Initialize(1280, 720, L"Catalyst - Editor")) return;
+void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
+    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"CatalystEngine", NULL };
+    RegisterClassEx(&wc);
 
-    m_renderer.Initialize(m_window.GetHandle(), 1280, 720); 
-    while (m_window.IsOpen()) {
-        m_window.ProcessMessages();
-        m_renderer.Render();
+    HWND hwnd = CreateWindow(wc.lpszClassName, L"Catalyst Engine", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
+
+    g_Renderer = new DXRenderer();
+    g_Renderer->Initialize(hwnd, 1280, 800);
+
+    ShowWindow(hwnd, nShowCmd);
+    UpdateWindow(hwnd);
+
+    MSG msg = {};
+    while (msg.message != WM_QUIT) {
+        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        } else {
+            g_Renderer->Render();
+        }
     }
-    m_renderer.Shutdown();
+
+    g_Renderer->Shutdown();
+    delete g_Renderer;
+    UnregisterClass(wc.lpszClassName, wc.hInstance);
+}
+
+LRESULT CALLBACK EngineApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return true;
+
+    switch (msg) {
+    case WM_SIZE:
+        if (g_Renderer && wParam != SIZE_MINIMIZED) {
+            g_Renderer->OnResize(LOWORD(lParam), HIWORD(lParam));
+        }
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
 }

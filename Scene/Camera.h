@@ -1,34 +1,26 @@
 #pragma once
 #include <directxmath.h>
+#include <windows.h> // Needed for GetCursorPos
 
 class Camera {
 public:
     Camera();
 
-    // Setup projection (Perspective view)
     void SetProjection(float fovDegrees, float aspectRatio, float nearZ, float farZ);
+    void Update(float deltaTime = 0.016f); // Added deltaTime for smooth movement
 
-    // Update logic (Process Input & Math)
-    void Update();
-
-    // Getters for the Renderer
     DirectX::XMMATRIX GetViewMatrix() const;
     DirectX::XMMATRIX GetProjectionMatrix() const;
-    DirectX::XMFLOAT3 GetPosition() const { return m_pos; }
+    DirectX::XMFLOAT3 GetPosition() const { return m_position; }
 
 private:
-    // Transform
-    DirectX::XMFLOAT3 m_pos;
-    float m_pitch;
-    float m_yaw;
+    DirectX::XMFLOAT3 m_position;
+    DirectX::XMFLOAT3 m_rotation; // Pitch, Yaw, Roll
 
-    // Projection settings
-    float m_fovRadians;
-    float m_aspectRatio;
-    float m_nearZ;
-    float m_farZ;
+    DirectX::XMMATRIX m_viewMatrix;
+    DirectX::XMMATRIX m_projectionMatrix;
 
-    // Settings
-    float m_moveSpeed;
-    float m_lookSensitivity;
+    // --- Input State ---
+    POINT m_lastMousePos;
+    bool m_isFlying = false; // Are we currently moving the camera?
 };
