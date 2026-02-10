@@ -62,22 +62,30 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
 
     CreateDepthBuffer();
     
-    // Safety Wrap: If shader fails, catch it early
-    try {
-        CreateGraphicsPipeline();
-    } catch (const std::exception& e) {
-        MessageBoxA(hwnd, e.what(), "Shader Compilation Error", MB_OK | MB_ICONERROR);
-        exit(-1);
-    }
+    try { CreateGraphicsPipeline(); } 
+    catch (const std::exception& e) { MessageBoxA(hwnd, e.what(), "Shader Compilation Error", MB_OK | MB_ICONERROR); exit(-1); }
 
     CreateConstantBuffer();
     CreateDefaultTexture(); 
 
-    // --- CREATE PRIMITIVES (Pass Command Queue) ---
+    // --- CREATE PRIMITIVES ---
     m_primitives["Cube"]     = PrimitiveGenerator::CreateCube(m_device.Get(), m_commandQueue.Get());
     m_primitives["Sphere"]   = PrimitiveGenerator::CreateSphere(m_device.Get(), m_commandQueue.Get());
     m_primitives["Plane"]    = PrimitiveGenerator::CreatePlane(m_device.Get(), m_commandQueue.Get());
     m_primitives["Cylinder"] = PrimitiveGenerator::CreateCylinder(m_device.Get(), m_commandQueue.Get());
+
+    // --- CREATE DEFAULT ASSETS (Using Shared Pointers) ---
+    auto cubeAsset = std::make_shared<Asset>();
+    cubeAsset->id = 0; cubeAsset->name = "Basic Cube"; cubeAsset->mesh = m_primitives["Cube"];
+    m_assets.push_back(cubeAsset);
+
+    auto sphereAsset = std::make_shared<Asset>();
+    sphereAsset->id = 1; sphereAsset->name = "Basic Sphere"; sphereAsset->mesh = m_primitives["Sphere"];
+    m_assets.push_back(sphereAsset);
+
+    auto planeAsset = std::make_shared<Asset>();
+    planeAsset->id = 2; planeAsset->name = "Basic Plane"; planeAsset->mesh = m_primitives["Plane"];
+    m_assets.push_back(planeAsset);
 
     m_ui.Initialize(hwnd, m_device.Get(), m_commandQueue.Get(), FrameCount);
     m_ui.SetPrimitives(m_primitives); 
@@ -85,8 +93,17 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     float aspectRatio = (float)width / (float)height;
     m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f);
 
-    m_gameObjects.push_back({ "Floor", {0, -0.5f, 0}, {0,0,0}, {1,1,1}, {0.3f, 0.3f, 0.3f, 1}, m_primitives["Plane"], nullptr, nullptr, ObjectType::Mesh });
-    m_gameObjects.push_back({ "Sun Light", {0, 10, 0}, {1.57f, 0, 0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Light, 1.5f });
+    // Initial Scene (Safe access via .get())
+    GameObject floor;
+    floor.name = "Floor"; floor.position = {0, -0.5f, 0}; floor.scale = {1,1,1}; floor.color = {0.3f, 0.3f, 0.3f, 1};
+    floor.asset = m_assets[2].get(); // Plane Asset
+    m_gameObjects.push_back(floor);
+
+    GameObject sun;
+    sun.name = "Sun Light"; sun.position = {0, 10, 0}; sun.rotation = {1.57f, 0, 0}; sun.scale = {1,1,1}; sun.color = {1,1,1,1};
+    sun.asset = m_assets[1].get(); // Sphere Asset (Visual representation)
+    sun.type = ObjectType::Light; sun.lightIntensity = 1.5f;
+    m_gameObjects.push_back(sun);
 }
 
 void DXRenderer::OnResize(int width, int height) {
@@ -127,7 +144,8 @@ void DXRenderer::Render() {
     XMMATRIX mView = m_camera.GetViewMatrix();
     XMMATRIX mProj = m_camera.GetProjectionMatrix();
 
-    m_ui.Update(m_gameObjects, m_selectedObjectIndex, mView, mProj);
+    // Pass Smart Pointers to UI
+    m_ui.Update(m_gameObjects, m_assets, m_selectedObjectIndex, mView, mProj);
     
     m_commandAllocator->Reset();
     m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get());
@@ -172,10 +190,15 @@ void DXRenderer::Render() {
 
     for (int i = 0; i < m_gameObjects.size() && i < MAX_OBJECTS; i++) {
         GameObject& obj = m_gameObjects[i];
-        if (!obj.mesh) continue;
+        
+        Mesh* meshToDraw = nullptr;
+        if (obj.asset) meshToDraw = obj.asset->mesh;
+        else if (obj.type == ObjectType::Light) meshToDraw = m_primitives["Sphere"]; 
+        
+        if (!meshToDraw) continue;
 
-        D3D12_VERTEX_BUFFER_VIEW vbv = obj.mesh->GetVertexView();
-        D3D12_INDEX_BUFFER_VIEW ibv = obj.mesh->GetIndexView();
+        D3D12_VERTEX_BUFFER_VIEW vbv = meshToDraw->GetVertexView();
+        D3D12_INDEX_BUFFER_VIEW ibv = meshToDraw->GetIndexView();
         m_commandList->IASetVertexBuffers(0, 1, &vbv);
         m_commandList->IASetIndexBuffer(&ibv);
 
@@ -190,29 +213,28 @@ void DXRenderer::Render() {
         cbData.wvpMatrix = wvp;
         cbData.worldMatrix = worldTransposed;
         cbData.colorOverride = obj.color;
-        
         cbData.lightDir = activeLightDir;
         cbData.lightIntensity = (obj.type == ObjectType::Light) ? 1.0f : activeIntensity;
         cbData.cameraPos = m_camera.GetPosition();
 
-        // --- VISUALIZATION MODE ---
-        if (obj.useVirtualGeometry && obj.debugVisualizer) {
-            cbData.visualizationMode = 1.0f; 
-        } else {
-            cbData.visualizationMode = 0.0f;
-        }
+        bool useVirtual = obj.asset ? obj.asset->useVirtualGeometry : false;
+        bool debugVis = obj.asset ? obj.asset->debugVisualizer : false;
+        if (useVirtual && debugVis) cbData.visualizationMode = 1.0f; 
+        else cbData.visualizationMode = 0.0f;
 
         memcpy(m_pCbvDataBegin + (i * objSize), &cbData, sizeof(cbData));
         m_commandList->SetGraphicsRootConstantBufferView(0, cbAddress + (i * objSize));
 
-        Texture* textureToBind = obj.texture ? obj.texture : m_defaultTexture;
+        Texture* textureToBind = m_defaultTexture;
+        if (obj.asset && obj.asset->texture) textureToBind = obj.asset->texture;
+
         if (textureToBind && textureToBind->GetSRVHeap()) {
             ID3D12DescriptorHeap* heaps[] = { textureToBind->GetSRVHeap() };
             m_commandList->SetDescriptorHeaps(1, heaps);
             m_commandList->SetGraphicsRootDescriptorTable(1, textureToBind->GetGPUHandle());
         }
 
-        m_commandList->DrawIndexedInstanced(obj.mesh->GetIndexCount(), 1, 0, 0, 0);
+        m_commandList->DrawIndexedInstanced(meshToDraw->GetIndexCount(), 1, 0, 0, 0);
     }
 
     m_ui.Draw(m_commandList.Get());
@@ -238,7 +260,6 @@ void DXRenderer::CreateDefaultTexture() {
 void DXRenderer::PickObject(int mouseX, int mouseY) {
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
-    
     float ndcX = (2.0f * mouseX) / m_width - 1.0f;
     float ndcY = -((2.0f * mouseY) / m_height - 1.0f);
     XMVECTOR nearPoint = XMVectorSet(ndcX, ndcY, 0.0f, 1.0f);
@@ -249,18 +270,14 @@ void DXRenderer::PickObject(int mouseX, int mouseY) {
 
     float closestDist = FLT_MAX;
     int hitIndex = -1;
-
     for (int i = 0; i < m_gameObjects.size(); i++) {
         GameObject& obj = m_gameObjects[i];
         DirectX::BoundingOrientedBox obb; 
         obb.Center = obj.position;
         obb.Extents = { obj.scale.x / 2.0f, obj.scale.y / 2.0f, obj.scale.z / 2.0f };
         XMStoreFloat4(&obb.Orientation, XMQuaternionRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z));
-
         float dist;
-        if (obb.Intersects(rayOrigin, rayDir, dist)) {
-            if (dist < closestDist) { closestDist = dist; hitIndex = i; }
-        }
+        if (obb.Intersects(rayOrigin, rayDir, dist)) { if (dist < closestDist) { closestDist = dist; hitIndex = i; } }
     }
     m_selectedObjectIndex = hitIndex;
 }
@@ -312,19 +329,10 @@ void DXRenderer::CreateDepthBuffer() {
 
 void DXRenderer::CreateGraphicsPipeline() {
     ComPtr<ID3DBlob> vs, ps, err;
-    
-    // --- SAFE SHADER COMPILATION ---
     HRESULT hr = D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &vs, &err);
-    if (FAILED(hr)) {
-        if (err) { std::cout << "VS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); }
-        throw std::runtime_error("Vertex Shader Compile Failed");
-    }
-
+    if (FAILED(hr)) { if (err) { std::cout << "VS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); } throw std::runtime_error("Vertex Shader Compile Failed"); }
     hr = D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &ps, &err);
-    if (FAILED(hr)) {
-        if (err) { std::cout << "PS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); }
-        throw std::runtime_error("Pixel Shader Compile Failed");
-    }
+    if (FAILED(hr)) { if (err) { std::cout << "PS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); } throw std::runtime_error("Pixel Shader Compile Failed"); }
 
     D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -333,64 +341,18 @@ void DXRenderer::CreateGraphicsPipeline() {
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
-
     D3D12_ROOT_PARAMETER rp[2];
-    
     rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rp[0].Descriptor.ShaderRegister = 0;
     rp[0].Descriptor.RegisterSpace = 0;
     rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_DESCRIPTOR_RANGE range;
-    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 2; 
-    range.BaseShaderRegister = 0;
-    range.RegisterSpace = 0;
-    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rp[1].DescriptorTable.NumDescriptorRanges = 1;
-    rp[1].DescriptorTable.pDescriptorRanges = &range;
-    rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.ShaderRegister = 0;
-    sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 2;
-    rsDesc.pParameters = rp;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    ComPtr<ID3DBlob> sig;
-    D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr);
+    D3D12_DESCRIPTOR_RANGE range; range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; range.NumDescriptors = 2; range.BaseShaderRegister = 0; range.RegisterSpace = 0; range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; rp[1].DescriptorTable.NumDescriptorRanges = 1; rp[1].DescriptorTable.pDescriptorRanges = &range; rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC sampler = {}; sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR; sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP; sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP; sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP; sampler.ShaderRegister = 0; sampler.RegisterSpace = 0; sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {}; rsDesc.NumParameters = 2; rsDesc.pParameters = rp; rsDesc.NumStaticSamplers = 1; rsDesc.pStaticSamplers = &sampler; rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    ComPtr<ID3DBlob> sig; D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr);
     m_device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.InputLayout = { layout, 5 }; 
-    pso.pRootSignature = m_rootSignature.Get();
-    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
-    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.SampleMask = UINT_MAX;
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    pso.SampleDesc.Count = 1;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {}; pso.InputLayout = { layout, 5 }; pso.pRootSignature = m_rootSignature.Get(); pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() }; pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() }; pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID; pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK; pso.RasterizerState.DepthClipEnable = TRUE; pso.DepthStencilState.DepthEnable = TRUE; pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL; pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS; pso.DSVFormat = DXGI_FORMAT_D32_FLOAT; pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL; pso.SampleMask = UINT_MAX; pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; pso.NumRenderTargets = 1; pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pso.SampleDesc.Count = 1;
     m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_pipelineState));
 }
 

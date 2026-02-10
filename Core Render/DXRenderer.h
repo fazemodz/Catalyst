@@ -8,14 +8,15 @@
 #include <wrl.h>
 #include <stdexcept> 
 #include <iostream>
+#include <memory> // <--- CRITICAL for shared_ptr
 
-// Helper macro for error checking
 inline void ThrowIfFailed(HRESULT hr) {
     if (FAILED(hr)) throw std::runtime_error("DirectX Error");
 }
 
 #include "../Scene/Camera.h"
 #include "../Scene/GameObject.h"
+#include "../Scene/Asset.h" 
 #include "../UI/UIManager.h"
 #include "../Resources/Mesh.h"
 #include "../Resources/Texture.h"
@@ -56,6 +57,9 @@ private:
     // Assets
     std::map<std::string, Mesh*> m_primitives;
     Texture* m_defaultTexture = nullptr; 
+    
+    // CRITICAL FIX: Smart Pointers prevent crashes when vector resizes
+    std::vector<std::shared_ptr<Asset>> m_assets; 
 
     // Shader Data
     struct ConstantBufferData {
@@ -67,7 +71,7 @@ private:
         float lightIntensity;            
         
         DirectX::XMFLOAT3 cameraPos;     
-        float visualizationMode; // 0=Normal, 1=Meshlets
+        float visualizationMode; 
     };
 
     ComPtr<ID3D12Resource> m_constantBuffer;
@@ -89,7 +93,7 @@ private:
     // Methods
     void PickObject(int mouseX, int mouseY);
     void CreateDepthBuffer();
-    void CreateGraphicsPipeline(); // Updated with crash protection
+    void CreateGraphicsPipeline(); 
     void CreateDefaultTexture(); 
     void CreateConstantBuffer();
     void FlushGPU();

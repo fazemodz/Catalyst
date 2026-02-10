@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <map> 
 #include <commdlg.h>
+#include <memory> // <--- NEW
 
 #include "../Scene/GameObject.h"
+#include "../Scene/Asset.h" 
 #include "../Resources/Mesh.h"
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -20,8 +22,9 @@ class UIManager {
 public:
     void Initialize(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* commandQueue, int frameCount);
     
-    void Update(std::vector<GameObject>& gameObjects, int& selectedIndex, 
-                const DirectX::XMMATRIX& viewMatrix, const DirectX::XMMATRIX& projMatrix);
+    // Updated signature for Smart Pointers
+    void Update(std::vector<GameObject>& gameObjects, std::vector<std::shared_ptr<Asset>>& assets, 
+                int& selectedIndex, const DirectX::XMMATRIX& viewMatrix, const DirectX::XMMATRIX& projMatrix);
     
     void Draw(ID3D12GraphicsCommandList* cmdList);
     void Shutdown();
@@ -39,6 +42,10 @@ private:
 
     std::map<std::string, Mesh*> m_primitives;
 
+    Asset* m_editingAsset = nullptr;
+    bool m_showAssetEditor = false;
+
     std::string OpenFileDialog();
-    void DrawContentBrowser(std::vector<GameObject>& gameObjects); 
+    void DrawContentBrowser(std::vector<GameObject>& gameObjects, std::vector<std::shared_ptr<Asset>>& assets); 
+    void DrawAssetEditorWindow(ID3D12Device* device, ID3D12CommandQueue* cmdQueue); 
 };

@@ -136,6 +136,7 @@
     <ClInclude Include="Resources\ModelLoader.h" />
     <ClInclude Include="Resources\PrimitiveGenerator.h" />
     <ClInclude Include="Resources\Texture.h" />
+    <ClInclude Include="Scene\Asset.h" />
     <ClInclude Include="Scene\Camera.h" />
     <ClInclude Include="Scene\GameObject.h" />
     <ClInclude Include="UI\Theme.h" />
@@ -159,6 +160,7 @@
     <ClCompile Include="Resources\ModelLoader.cpp" />
     <ClCompile Include="Resources\PrimitiveGenerator.cpp" />
     <ClCompile Include="Resources\Texture.cpp" />
+    <ClCompile Include="Scene\Asset.cpp" />
     <ClCompile Include="Scene\Camera.cpp">
       <RuntimeLibrary>MultiThreadedDebugDll</RuntimeLibrary>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
