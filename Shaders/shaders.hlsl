@@ -3,16 +3,17 @@ struct VSInput {
     float4 color : COLOR;
     float2 uv : TEXCOORD;
     float3 normal : NORMAL;
-    float3 tangent : TANGENT; // <--- NEW Input
+    float3 tangent : TANGENT;
 };
 
-struct PSInput {
+// Output from Vertex Shader / Input to Pixel Shader
+struct VSOutput {
     float4 position : SV_POSITION;
     float3 worldPos : POSITION;
     float4 color : COLOR;
     float2 uv : TEXCOORD;
     float3 normal : NORMAL;
-    float3 tangent : TANGENT; // <--- Pass to PS
+    float3 tangent : TANGENT;
 };
 
 cbuffer ConstantBuffer : register(b0) {
@@ -22,20 +23,18 @@ cbuffer ConstantBuffer : register(b0) {
     float3 lightDir;
     float lightIntensity;
     float3 cameraPos;
-    float padding;
+    float visualizationMode;
 };
 
 Texture2D g_texture : register(t0);
-// Texture2D g_normalMap : register(t1); // Future
 SamplerState g_sampler : register(s0);
 
 // --- VERTEX SHADER ---
-PSInput VSMain(VSInput input) {
-    PSInput result;
+VSOutput VSMain(VSInput input) {
+    VSOutput result;
     result.position = mul(float4(input.position, 1.0f), wvpMatrix);
     result.worldPos = mul(float4(input.position, 1.0f), worldMatrix).xyz;
     
-    // Transform Normal and Tangent to World Space
     result.normal = normalize(mul(input.normal, (float3x3)worldMatrix));
     result.tangent = normalize(mul(input.tangent, (float3x3)worldMatrix));
     
@@ -44,28 +43,42 @@ PSInput VSMain(VSInput input) {
     return result;
 }
 
+// --- HELPER: Random Color Generator ---
+float3 HashColor(uint seed) {
+    uint n = seed * 1327217885;
+    n = (n << 13) ^ n;
+    n *= 1327217885;
+    float r = ((n * 13) % 255) / 255.0f;
+    float g = ((n * 23) % 255) / 255.0f;
+    float b = ((n * 57) % 255) / 255.0f;
+    return float3(r, g, b);
+}
+
 // --- PIXEL SHADER ---
-float4 PSMain(PSInput input) : SV_TARGET {
+// Note: primID is passed as a separate argument!
+float4 PSMain(VSOutput input, uint primID : SV_PrimitiveID) : SV_TARGET {
+    
+    // --- VIRTUAL GEOMETRY VISUALIZER ---
+    if (visualizationMode > 0.5f) {
+        uint clusterID = primID / 126; // Approx cluster ID
+        float3 clusterColor = HashColor(clusterID);
+        
+        float3 N = normalize(input.normal);
+        float3 L = normalize(-lightDir);
+        float diff = max(dot(N, L), 0.2f);
+        return float4(clusterColor * diff, 1.0f);
+    }
+
+    // --- STANDARD RENDER PATH ---
     float4 texColor = g_texture.Sample(g_sampler, input.uv);
     
-    // --- NORMAL MAPPING MATH ---
-    // 1. Build TBN Matrix
     float3 T = normalize(input.tangent);
     float3 N = normalize(input.normal);
-    // Gram-Schmidt re-orthogonalization to ensure T is perp to N
+    // Gram-Schmidt
     T = normalize(T - dot(T, N) * N);
-    float3 B = cross(N, T); // Bitangent
-    float3x3 TBN = float3x3(T, B, N);
     
-    // 2. Sample Normal Map (Simulated for now using N)
-    // float3 normalMap = g_normalMap.Sample(g_sampler, input.uv).rgb;
-    // normalMap = normalMap * 2.0 - 1.0;
-    // float3 bumpedNormal = normalize(mul(normalMap, TBN));
-    
-    // For now, use basic N until we handle the descriptor heap for 2 textures
+    // Simple Lighting
     float3 finalNormal = N; 
-    
-    // --- LIGHTING ---
     float3 L = normalize(-lightDir);
     float3 V = normalize(cameraPos - input.worldPos);
     

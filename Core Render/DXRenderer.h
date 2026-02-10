@@ -7,8 +7,9 @@
 #include <map> 
 #include <wrl.h>
 #include <stdexcept> 
+#include <iostream>
 
-// Error Helper
+// Helper macro for error checking
 inline void ThrowIfFailed(HRESULT hr) {
     if (FAILED(hr)) throw std::runtime_error("DirectX Error");
 }
@@ -37,7 +38,7 @@ private:
 
     int m_width, m_height;
 
-    // D3D12 Core Objects
+    // D3D12 Core
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<IDXGISwapChain3> m_swapChain;
@@ -52,11 +53,11 @@ private:
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
 
-    // Resources
+    // Assets
     std::map<std::string, Mesh*> m_primitives;
     Texture* m_defaultTexture = nullptr; 
 
-    // Constant Buffer Structure
+    // Shader Data
     struct ConstantBufferData {
         DirectX::XMMATRIX wvpMatrix;
         DirectX::XMMATRIX worldMatrix; 
@@ -66,29 +67,29 @@ private:
         float lightIntensity;            
         
         DirectX::XMFLOAT3 cameraPos;     
-        float padding;
+        float visualizationMode; // 0=Normal, 1=Meshlets
     };
 
     ComPtr<ID3D12Resource> m_constantBuffer;
     UINT8* m_pCbvDataBegin = nullptr;
 
-    // Scene Data
+    // Scene
     std::vector<GameObject> m_gameObjects;
     int m_selectedObjectIndex = -1;
 
     Camera m_camera;
     UIManager m_ui; 
 
-    // Synchronization
+    // Sync
     ComPtr<ID3D12Fence> m_fence;
     HANDLE m_fenceEvent;
     uint64_t m_fenceValue = 0;
     uint32_t m_frameIndex = 0;
 
-    // Internal Functions
+    // Methods
     void PickObject(int mouseX, int mouseY);
     void CreateDepthBuffer();
-    void CreateGraphicsPipeline();
+    void CreateGraphicsPipeline(); // Updated with crash protection
     void CreateDefaultTexture(); 
     void CreateConstantBuffer();
     void FlushGPU();

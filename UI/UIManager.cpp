@@ -10,7 +10,6 @@
 using namespace DirectX;
 namespace fs = std::filesystem;
 
-// Constants to prevent typos
 const char* PAYLOAD_MODEL = "DRAG_DROP_MODEL";
 const char* PAYLOAD_TEXTURE = "DRAG_DROP_TEXTURE";
 
@@ -68,9 +67,6 @@ std::string UIManager::OpenFileDialog() {
     return "";
 }
 
-// ===========================================================================================
-//  MAIN UPDATE LOOP
-// ===========================================================================================
 void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex, const XMMATRIX& viewMatrix, const XMMATRIX& projMatrix) {
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -87,42 +83,26 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
     float viewportW = screenW - rightBarW;
     float viewportH = screenH - bottomH - menuHeight;
 
-    // 1. MENU BAR (Top)
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
             ImGui::EndMenu();
         }
 
-        // --- PLACE ACTORS DROPDOWN ---
         if (ImGui::BeginMenu("Place Actors")) {
             ImGui::SeparatorText("Primitives");
-            
-            // Spawns using the pre-generated meshes in m_primitives
-            if (ImGui::MenuItem("Cube")) {
-                gameObjects.push_back({ "Cube", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Cube"], nullptr, nullptr, ObjectType::Mesh });
-            }
-            if (ImGui::MenuItem("Sphere")) {
-                gameObjects.push_back({ "Sphere", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Mesh });
-            }
-            if (ImGui::MenuItem("Cylinder")) {
-                gameObjects.push_back({ "Cylinder", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Cylinder"], nullptr, nullptr, ObjectType::Mesh });
-            }
-            if (ImGui::MenuItem("Plane")) {
-                gameObjects.push_back({ "Plane", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Plane"], nullptr, nullptr, ObjectType::Mesh });
-            }
+            if (ImGui::MenuItem("Cube")) { gameObjects.push_back({ "Cube", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Cube"], nullptr, nullptr, ObjectType::Mesh }); }
+            if (ImGui::MenuItem("Sphere")) { gameObjects.push_back({ "Sphere", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Mesh }); }
+            if (ImGui::MenuItem("Cylinder")) { gameObjects.push_back({ "Cylinder", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Cylinder"], nullptr, nullptr, ObjectType::Mesh }); }
+            if (ImGui::MenuItem("Plane")) { gameObjects.push_back({ "Plane", {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m_primitives["Plane"], nullptr, nullptr, ObjectType::Mesh }); }
 
             ImGui::SeparatorText("Lights");
-            if (ImGui::MenuItem("Directional Light")) {
-                // Pointing DOWN by default (Rot X = 1.57)
-                gameObjects.push_back({ "Sun Light", {0, 10, 0}, {1.57f, 0, 0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Light, 1.5f });
-            }
+            if (ImGui::MenuItem("Directional Light")) { gameObjects.push_back({ "Sun Light", {0, 10, 0}, {1.57f, 0, 0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Light, 1.5f }); }
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
     }
 
-    // 2. OUTLINER (Top Right)
     ImGui::SetNextWindowPos(ImVec2(screenW - rightBarW, menuHeight));
     ImGui::SetNextWindowSize(ImVec2(rightBarW, viewportH / 2.0f));
     ImGui::Begin("Outliner", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
@@ -130,17 +110,14 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
     for (int i = 0; i < gameObjects.size(); i++) {
         ImGui::PushID(i);
         bool isSelected = (selectedIndex == i);
-        if (ImGui::Selectable(gameObjects[i].name.c_str(), isSelected)) {
-            selectedIndex = i;
-        }
+        if (ImGui::Selectable(gameObjects[i].name.c_str(), isSelected)) { selectedIndex = i; }
 
-        // Context Menu (Right Click -> Delete)
         if (ImGui::BeginPopupContextItem()) {
             if (ImGui::MenuItem("Delete")) {
                 gameObjects.erase(gameObjects.begin() + i);
                 if (selectedIndex == i) selectedIndex = -1;
                 else if (selectedIndex > i) selectedIndex--;
-                i--; // Adjust index
+                i--; 
                 ImGui::EndPopup();
                 ImGui::PopID();
                 continue; 
@@ -148,7 +125,6 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
             ImGui::EndPopup();
         }
 
-        // Drag Drop Texture ONTO the name
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(PAYLOAD_TEXTURE)) {
                 std::string path = (const char*)payload->Data;
@@ -163,7 +139,6 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
         ImGui::PopID();
     }
     
-    // Empty Space Drop Target (Drag Model to create new object)
     ImVec2 available = ImGui::GetContentRegionAvail();
     if (available.y < 50) available.y = 50; 
     ImGui::InvisibleButton("##HierarchyDropZone", available);
@@ -172,9 +147,8 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(PAYLOAD_MODEL)) {
             std::string path = (const char*)payload->Data;
             try {
-                Mesh* m = ModelLoader::Load(path, m_device);
+                Mesh* m = ModelLoader::Load(path, m_device, m_cmdQueue);
                 std::string name = fs::path(path).stem().string();
-                // Note: nullptr for both texture slots
                 gameObjects.push_back({ name, {0,0,0}, {0,0,0}, {1,1,1}, {1,1,1,1}, m, nullptr, nullptr, ObjectType::Mesh });
             } catch(...) {}
         }
@@ -182,7 +156,6 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
     }
     ImGui::End();
 
-    // 3. DETAILS PANEL (Bottom Right)
     ImGui::SetNextWindowPos(ImVec2(screenW - rightBarW, menuHeight + (viewportH / 2.0f)));
     ImGui::SetNextWindowSize(ImVec2(rightBarW, viewportH / 2.0f));
     ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
@@ -190,7 +163,6 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
     if (selectedIndex >= 0 && selectedIndex < gameObjects.size()) {
         GameObject& obj = gameObjects[selectedIndex];
         
-        // Name Input
         char nameBuf[128]; strcpy_s(nameBuf, obj.name.c_str());
         if (ImGui::InputText("Name", nameBuf, 128)) obj.name = nameBuf;
         
@@ -201,7 +173,6 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
         ImGui::DragFloat3("Scl", &obj.scale.x,    0.1f);
         ImGui::Separator();
 
-        // --- TYPE SPECIFIC UI ---
         if (obj.type == ObjectType::Light) {
             ImGui::TextColored(ImVec4(1,1,0,1), "LIGHT SETTINGS");
             ImGui::DragFloat("Intensity", &obj.lightIntensity, 0.1f, 0.0f, 10.0f);
@@ -211,17 +182,13 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
             ImGui::Text("MATERIAL");
             ImGui::ColorEdit4("Tint", &obj.color.x);
             
-            // --- A. ALBEDO TEXTURE ---
             std::string btnText = obj.texture ? "Tex: " + fs::path(obj.name).filename().string() : "Texture: Empty";
             if (obj.texture) btnText = "Texture Assigned";
             
             if (ImGui::Button(btnText.c_str(), ImVec2(-1, 30))) {
                 std::string path = OpenFileDialog();
-                if (!path.empty()) {
-                    try { Texture* t = new Texture(); t->Load(path, m_device, m_cmdQueue); obj.texture = t; } catch(...) {}
-                }
+                if (!path.empty()) { try { Texture* t = new Texture(); t->Load(path, m_device, m_cmdQueue); obj.texture = t; } catch(...) {} }
             }
-            // Drop Logic (Albedo)
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(PAYLOAD_TEXTURE)) {
                     std::string path = (const char*)payload->Data;
@@ -230,18 +197,14 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
                 ImGui::EndDragDropTarget();
             }
 
-            // --- B. NORMAL MAP (NEW) ---
             ImGui::Spacing();
             std::string normText = obj.normalMap ? "Norm: " + fs::path(obj.name).filename().string() : "Normal: Empty";
             if (obj.normalMap) normText = "Normal Map Assigned";
 
             if (ImGui::Button(normText.c_str(), ImVec2(-1, 30))) {
                 std::string path = OpenFileDialog();
-                if (!path.empty()) {
-                    try { Texture* t = new Texture(); t->Load(path, m_device, m_cmdQueue); obj.normalMap = t; } catch(...) {}
-                }
+                if (!path.empty()) { try { Texture* t = new Texture(); t->Load(path, m_device, m_cmdQueue); obj.normalMap = t; } catch(...) {} }
             }
-            // Drop Logic (Normal)
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(PAYLOAD_TEXTURE)) {
                     std::string path = (const char*)payload->Data;
@@ -249,9 +212,25 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
                 }
                 ImGui::EndDragDropTarget();
             }
+
+            // --- VIRTUAL GEOMETRY TOGGLES ---
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "VIRTUAL GEOMETRY");
+            
+            if (ImGui::Checkbox("Enable Virtualization", &obj.useVirtualGeometry)) {
+                 if(!obj.useVirtualGeometry) obj.debugVisualizer = false;
+            }
+
+            if (obj.useVirtualGeometry) {
+                 ImGui::Indent();
+                 int clusterCount = (int)obj.mesh->GetMeshlets().size();
+                 ImGui::TextDisabled("Cluster Count: %d", clusterCount);
+                 ImGui::TextDisabled("Status: Streaming Active");
+                 ImGui::Checkbox("Debug Visualizer (Clusters)", &obj.debugVisualizer);
+                 ImGui::Unindent();
+            }
         }
 
-        // --- GIZMO ---
         ImGuizmo::SetRect(0, menuHeight, viewportW, viewportH);
         XMFLOAT4X4 view, proj;
         XMStoreFloat4x4(&view, viewMatrix);
@@ -274,12 +253,10 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, int& selectedIndex,
     }
     ImGui::End();
 
-    // 4. CONTENT BROWSER (Bottom)
     ImGui::SetNextWindowPos(ImVec2(0, menuHeight + viewportH));
     ImGui::SetNextWindowSize(ImVec2(screenW, bottomH));
     DrawContentBrowser(gameObjects);
 
-    // 5. SHORTCUTS (Delete)
     if (ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedIndex >= 0 && selectedIndex < gameObjects.size()) {
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             gameObjects.erase(gameObjects.begin() + selectedIndex);

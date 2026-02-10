@@ -1,13 +1,8 @@
 #include "ModelLoader.h"
-#include <iostream>
-#include <vector>
-
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../Lib/tiny_obj_loader.h" 
 
-using namespace DirectX;
-
-Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device) {
+Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -18,42 +13,45 @@ Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device) {
     }
 
     std::vector<Vertex> vertices;
-    std::vector<uint16_t> indices;
+    std::vector<uint32_t> indices;
 
     for (const auto& shape : shapes) {
         for (const auto& index : shape.mesh.indices) {
             Vertex vertex = {};
+            
+            // Position
+            vertex.position = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+            vertex.color = { 1, 1, 1, 1 };
 
-            // 1. Position
-            vertex.position.x = attrib.vertices[3 * index.vertex_index + 0];
-            vertex.position.y = attrib.vertices[3 * index.vertex_index + 1];
-            vertex.position.z = attrib.vertices[3 * index.vertex_index + 2];
-
-            // 2. Color (White default)
-            vertex.color = { 1.0f, 1.0f, 1.0f, 1.0f };
-
-            // 3. UVs
+            // UV
             if (index.texcoord_index >= 0) {
-                vertex.uv.x = attrib.texcoords[2 * index.texcoord_index + 0];
-                vertex.uv.y = 1.0f - attrib.texcoords[2 * index.texcoord_index + 1]; 
+                vertex.uv = {
+                    attrib.texcoords[2 * index.texcoord_index + 0],
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+                };
             }
 
-            // 4. Normals 
+            // Normal
             if (index.normal_index >= 0) {
-                vertex.normal.x = attrib.normals[3 * index.normal_index + 0];
-                vertex.normal.y = attrib.normals[3 * index.normal_index + 1];
-                vertex.normal.z = attrib.normals[3 * index.normal_index + 2];
-            } else {
-                // Fallback if model has no normals (Point Up)
-                vertex.normal = { 0.0f, 1.0f, 0.0f };
-            }
+                vertex.normal = {
+                    attrib.normals[3 * index.normal_index + 0],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2]
+                };
+            } else { vertex.normal = { 0, 1, 0 }; }
+
+            vertex.tangent = { 1.0f, 0.0f, 0.0f }; // Default Tangent
 
             vertices.push_back(vertex);
-            indices.push_back(static_cast<uint16_t>(indices.size())); 
+            indices.push_back(static_cast<uint32_t>(indices.size())); 
         }
     }
 
     Mesh* newMesh = new Mesh();
-    newMesh->Initialize(device, vertices, indices);
+    newMesh->Initialize(device, cmdQueue, vertices, indices); // Pass Queue
     return newMesh;
 }

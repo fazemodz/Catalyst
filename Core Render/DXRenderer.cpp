@@ -61,24 +61,30 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
     CreateDepthBuffer();
-    CreateGraphicsPipeline();
+    
+    // Safety Wrap: If shader fails, catch it early
+    try {
+        CreateGraphicsPipeline();
+    } catch (const std::exception& e) {
+        MessageBoxA(hwnd, e.what(), "Shader Compilation Error", MB_OK | MB_ICONERROR);
+        exit(-1);
+    }
+
     CreateConstantBuffer();
     CreateDefaultTexture(); 
 
-    // --- CREATE PRIMITIVES ---
-    m_primitives["Cube"]     = PrimitiveGenerator::CreateCube(m_device.Get());
-    m_primitives["Sphere"]   = PrimitiveGenerator::CreateSphere(m_device.Get());
-    m_primitives["Plane"]    = PrimitiveGenerator::CreatePlane(m_device.Get());
-    m_primitives["Cylinder"] = PrimitiveGenerator::CreateCylinder(m_device.Get());
+    // --- CREATE PRIMITIVES (Pass Command Queue) ---
+    m_primitives["Cube"]     = PrimitiveGenerator::CreateCube(m_device.Get(), m_commandQueue.Get());
+    m_primitives["Sphere"]   = PrimitiveGenerator::CreateSphere(m_device.Get(), m_commandQueue.Get());
+    m_primitives["Plane"]    = PrimitiveGenerator::CreatePlane(m_device.Get(), m_commandQueue.Get());
+    m_primitives["Cylinder"] = PrimitiveGenerator::CreateCylinder(m_device.Get(), m_commandQueue.Get());
 
     m_ui.Initialize(hwnd, m_device.Get(), m_commandQueue.Get(), FrameCount);
     m_ui.SetPrimitives(m_primitives); 
 
-    // FIX: Increased Far Clip to 5000 so the scene doesn't disappear
     float aspectRatio = (float)width / (float)height;
     m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f);
 
-    // Initial Scene
     m_gameObjects.push_back({ "Floor", {0, -0.5f, 0}, {0,0,0}, {1,1,1}, {0.3f, 0.3f, 0.3f, 1}, m_primitives["Plane"], nullptr, nullptr, ObjectType::Mesh });
     m_gameObjects.push_back({ "Sun Light", {0, 10, 0}, {1.57f, 0, 0}, {1,1,1}, {1,1,1,1}, m_primitives["Sphere"], nullptr, nullptr, ObjectType::Light, 1.5f });
 }
@@ -105,7 +111,7 @@ void DXRenderer::OnResize(int width, int height) {
     CreateDepthBuffer();
 
     float aspectRatio = (float)width / (float)height;
-    m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f); // Fix resize clip too
+    m_camera.SetProjection(45.0f, aspectRatio, 0.1f, 5000.0f); 
 }
 
 void DXRenderer::Render() {
@@ -151,7 +157,6 @@ void DXRenderer::Render() {
     UINT objSize = (sizeof(ConstantBufferData) + 255) & ~255;
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = m_constantBuffer->GetGPUVirtualAddress();
 
-    // Find Active Light
     DirectX::XMFLOAT3 activeLightDir = { 0, -1, 0 };
     float activeIntensity = 0.0f;
 
@@ -187,14 +192,19 @@ void DXRenderer::Render() {
         cbData.colorOverride = obj.color;
         
         cbData.lightDir = activeLightDir;
-        // If it's the light gizmo itself, make it bright (Unlit)
         cbData.lightIntensity = (obj.type == ObjectType::Light) ? 1.0f : activeIntensity;
         cbData.cameraPos = m_camera.GetPosition();
+
+        // --- VISUALIZATION MODE ---
+        if (obj.useVirtualGeometry && obj.debugVisualizer) {
+            cbData.visualizationMode = 1.0f; 
+        } else {
+            cbData.visualizationMode = 0.0f;
+        }
 
         memcpy(m_pCbvDataBegin + (i * objSize), &cbData, sizeof(cbData));
         m_commandList->SetGraphicsRootConstantBufferView(0, cbAddress + (i * objSize));
 
-        // Texture Binding (Albedo)
         Texture* textureToBind = obj.texture ? obj.texture : m_defaultTexture;
         if (textureToBind && textureToBind->GetSRVHeap()) {
             ID3D12DescriptorHeap* heaps[] = { textureToBind->GetSRVHeap() };
@@ -242,7 +252,7 @@ void DXRenderer::PickObject(int mouseX, int mouseY) {
 
     for (int i = 0; i < m_gameObjects.size(); i++) {
         GameObject& obj = m_gameObjects[i];
-        DirectX::BoundingOrientedBox obb; // Needs <DirectXCollision.h>
+        DirectX::BoundingOrientedBox obb; 
         obb.Center = obj.position;
         obb.Extents = { obj.scale.x / 2.0f, obj.scale.y / 2.0f, obj.scale.z / 2.0f };
         XMStoreFloat4(&obb.Orientation, XMQuaternionRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z));
@@ -302,11 +312,20 @@ void DXRenderer::CreateDepthBuffer() {
 
 void DXRenderer::CreateGraphicsPipeline() {
     ComPtr<ID3DBlob> vs, ps, err;
-    D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err);
-    if (err) OutputDebugStringA((char*)err->GetBufferPointer());
-    D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG, 0, &ps, nullptr);
+    
+    // --- SAFE SHADER COMPILATION ---
+    HRESULT hr = D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &vs, &err);
+    if (FAILED(hr)) {
+        if (err) { std::cout << "VS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); }
+        throw std::runtime_error("Vertex Shader Compile Failed");
+    }
 
-    // INPUT LAYOUT: Updated with TANGENT (5 elements)
+    hr = D3DCompileFromFile(L"Shaders/shaders.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION, 0, &ps, &err);
+    if (FAILED(hr)) {
+        if (err) { std::cout << "PS Error: " << (char*)err->GetBufferPointer() << std::endl; OutputDebugStringA((char*)err->GetBufferPointer()); }
+        throw std::runtime_error("Pixel Shader Compile Failed");
+    }
+
     D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -317,16 +336,14 @@ void DXRenderer::CreateGraphicsPipeline() {
 
     D3D12_ROOT_PARAMETER rp[2];
     
-    // 0: Constant Buffer
     rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rp[0].Descriptor.ShaderRegister = 0;
     rp[0].Descriptor.RegisterSpace = 0;
     rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // 1: Texture Table (Range = 2 to support Albedo + Normal later)
     D3D12_DESCRIPTOR_RANGE range;
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 2; // <--- Increased to 2 slots
+    range.NumDescriptors = 2; 
     range.BaseShaderRegister = 0;
     range.RegisterSpace = 0;
     range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -357,7 +374,7 @@ void DXRenderer::CreateGraphicsPipeline() {
     m_device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.InputLayout = { layout, 5 }; // Updated Count to 5
+    pso.InputLayout = { layout, 5 }; 
     pso.pRootSignature = m_rootSignature.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };

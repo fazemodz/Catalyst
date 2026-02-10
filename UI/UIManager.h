@@ -4,7 +4,7 @@
 #include <vector>
 #include <string>
 #include <filesystem>
-#include <map> // Required for std::map
+#include <map> 
 #include <commdlg.h>
 
 #include "../Scene/GameObject.h"
@@ -20,14 +20,12 @@ class UIManager {
 public:
     void Initialize(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* commandQueue, int frameCount);
     
-    // Main Update Loop
     void Update(std::vector<GameObject>& gameObjects, int& selectedIndex, 
                 const DirectX::XMMATRIX& viewMatrix, const DirectX::XMMATRIX& projMatrix);
     
     void Draw(ID3D12GraphicsCommandList* cmdList);
     void Shutdown();
 
-    // Pass the list of primitive meshes from Renderer to UI
     void SetPrimitives(const std::map<std::string, Mesh*>& primitives) { m_primitives = primitives; }
 
 private:
@@ -39,7 +37,6 @@ private:
     float m_thumbnailSize = 64.0f;
     float m_padding = 16.0f;
 
-    // Stores references to the generated meshes (Cube, Sphere, etc.)
     std::map<std::string, Mesh*> m_primitives;
 
     std::string OpenFileDialog();
