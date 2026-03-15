@@ -1,19 +1,35 @@
 #pragma once
 #include <string>
-#include "../Resources/Mesh.h"
-#include "../Resources/Texture.h"
+#include <vector>
+
+class Mesh;
+class Texture;
+
+enum class AssetType { Mesh, TextureHDR };
 
 struct Asset {
     int id = -1;
     std::string name;
     std::string sourcePath;
     
-    // Core Data
+    AssetType type = AssetType::Mesh;
+
     Mesh* mesh = nullptr;
-    Texture* texture = nullptr;   // Default Albedo
-    Texture* normalMap = nullptr; // Default Normal
     
-    // Settings
-    bool useVirtualGeometry = false; // "Nanite" Toggle
-    bool debugVisualizer = false;    // Visualizer Toggle
+    // PBR Textures
+    Texture* albedoMap = nullptr;
+    Texture* normalMap = nullptr;
+    Texture* metallicMap = nullptr;
+    Texture* roughnessMap = nullptr;
+    Texture* aoMap = nullptr;
+    
+    // HDR Skybox Texture
+    Texture* hdrTexture = nullptr;
+
+    float metallicFactor = 0.0f;
+    float roughnessFactor = 0.5f;
+    bool enableReflections = false;
+
+    bool useVirtualGeometry = false;
+    bool debugVisualizer = false;
 };

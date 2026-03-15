@@ -25,7 +25,7 @@ void UI::ApplyUnrealTheme() {
     colors[ImGuiCol_WindowBg]           = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
     colors[ImGuiCol_ChildBg]            = ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
     colors[ImGuiCol_PopupBg]            = ImVec4(0.10f, 0.10f, 0.10f, 0.98f);
-    colors[ImGuiCol_Border]             = ImVec4(0.00f, 0.00f, 0.00f, 0.30f); // Subtle borders
+    colors[ImGuiCol_Border]             = ImVec4(0.00f, 0.00f, 0.00f, 0.30f); 
     colors[ImGuiCol_BorderShadow]       = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     
     // Headers (Lighter Gray)
@@ -35,7 +35,7 @@ void UI::ApplyUnrealTheme() {
     
     // Titles (The strip at the top of windows)
     colors[ImGuiCol_TitleBg]            = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
-    colors[ImGuiCol_TitleBgActive]      = ImVec4(0.10f, 0.10f, 0.10f, 1.00f); // Keep uniform
+    colors[ImGuiCol_TitleBgActive]      = ImVec4(0.10f, 0.10f, 0.10f, 1.00f); 
     colors[ImGuiCol_TitleBgCollapsed]   = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
     
     // Buttons (Standard Gray -> Hover White-ish)
@@ -51,21 +51,18 @@ void UI::ApplyUnrealTheme() {
     colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
     
     // Text
-    colors[ImGuiCol_Text]               = ImVec4(0.90f, 0.90f, 0.90f, 1.00f); // Off-white
+    colors[ImGuiCol_Text]               = ImVec4(0.90f, 0.90f, 0.90f, 1.00f); 
     colors[ImGuiCol_TextDisabled]       = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-    
-    // Selection / Highlighting (Unreal Orange/Gold)
-    // You can change this to Blue (0.0f, 0.45f, 0.8f) if you prefer Unity style
     ImVec4 accentColor = ImVec4(0.92f, 0.55f, 0.15f, 1.00f); 
     
-    colors[ImGuiCol_FrameBg]            = ImVec4(0.08f, 0.08f, 0.08f, 1.00f); // Input fields
+    colors[ImGuiCol_FrameBg]            = ImVec4(0.08f, 0.08f, 0.08f, 1.00f);
     colors[ImGuiCol_FrameBgHovered]     = ImVec4(0.12f, 0.12f, 0.12f, 1.00f);
     colors[ImGuiCol_FrameBgActive]      = ImVec4(0.16f, 0.16f, 0.16f, 1.00f);
     
     colors[ImGuiCol_SliderGrab]         = accentColor;
     colors[ImGuiCol_SliderGrabActive]   = ImVec4(accentColor.x * 1.1f, accentColor.y * 1.1f, accentColor.z * 1.1f, 1.0f);
     colors[ImGuiCol_CheckMark]          = accentColor;
-    colors[ImGuiCol_ResizeGrip]         = ImVec4(0.00f, 0.00f, 0.00f, 0.00f); // Hide resizing grip
+    colors[ImGuiCol_ResizeGrip]         = ImVec4(0.00f, 0.00f, 0.00f, 0.00f); 
     colors[ImGuiCol_ResizeGripHovered]  = accentColor;
     colors[ImGuiCol_ResizeGripActive]   = accentColor;
     colors[ImGuiCol_Separator]          = ImVec4(0.00f, 0.00f, 0.00f, 0.50f);

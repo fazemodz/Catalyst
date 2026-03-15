@@ -73,7 +73,7 @@ void Camera::Update(float deltaTime) {
         // Stop flying
         if (m_isFlying) {
             m_isFlying = false;
-            ShowCursor(TRUE); // Show cursor
+            ShowCursor(TRUE);
         }
     }
 

@@ -3,6 +3,7 @@
 #include <wrl.h>
 #include <vector>
 #include <directxmath.h>
+#include <DirectXCollision.h> 
 
 struct Vertex {
     DirectX::XMFLOAT3 position;
@@ -12,13 +13,12 @@ struct Vertex {
     DirectX::XMFLOAT3 tangent;
 };
 
-
 struct Meshlet {
     uint32_t VertexCount;
     uint32_t VertexOffset;
     uint32_t PrimCount;
     uint32_t PrimOffset;
-    DirectX::XMFLOAT3 Center; // Bounding Sphere
+    DirectX::XMFLOAT3 Center;
     float Radius;
 };
 
@@ -32,8 +32,8 @@ public:
     D3D12_INDEX_BUFFER_VIEW GetIndexView() const;
     uint32_t GetIndexCount() const { return m_indexCount; }
     
-    // Access the clusters
     const std::vector<Meshlet>& GetMeshlets() const { return m_meshlets; }
+    const DirectX::BoundingBox& GetBounds() const { return m_bounds; }
 
 private:
     ComPtr<ID3D12Resource> m_vertexBuffer;
@@ -42,7 +42,8 @@ private:
     D3D12_INDEX_BUFFER_VIEW m_ibView;
     uint32_t m_indexCount = 0;
 
-    std::vector<Meshlet> m_meshlets; // <--- The Data
+    std::vector<Meshlet> m_meshlets;
+    DirectX::BoundingBox m_bounds;
 
     ComPtr<ID3D12Resource> CreateDefaultBuffer(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, const void* initData, UINT64 byteSize, ComPtr<ID3D12Resource>& uploadBuffer);
     void GenerateMeshlets(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);

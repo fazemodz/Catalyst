@@ -2,24 +2,17 @@
 #include <windowsx.h> // For GET_X_LPARAM macros
 #include "../imgui.h" // Adjust path to where your imgui.h is
 
-// ----------------------------------------------------------------------
-// GLOBAL INPUT VARIABLES (Linked to DXRenderer)
-// ----------------------------------------------------------------------
 bool g_Keys[256] = { false };
 bool g_RightMouseDown = false;
 int g_MouseDeltaX = 0;
 int g_MouseDeltaY = 0;
 int g_LastMouseX = 0;
 int g_LastMouseY = 0;
-
-// ----------------------------------------------------------------------
-// IMGUI FORWARD DECLARATION
-// ----------------------------------------------------------------------
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // 1. PASS INPUT TO IMGUI
-    // If ImGui wants the mouse/keyboard, we let it handle it and return true.
+
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
         return true;
 
@@ -27,8 +20,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
-
-        // --- KEYBOARD INPUT (WASD) ---
+    
     case WM_KEYDOWN:
         if (wParam < 256) g_Keys[wParam] = true;
         if (wParam == VK_ESCAPE) PostQuitMessage(0);
@@ -36,13 +28,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_KEYUP:
         if (wParam < 256) g_Keys[wParam] = false;
         return 0;
-
-        // --- MOUSE INPUT (Camera Rotation) ---
     case WM_RBUTTONDOWN:
         g_RightMouseDown = true;
         g_LastMouseX = GET_X_LPARAM(lParam);
         g_LastMouseY = GET_Y_LPARAM(lParam);
-        ShowCursor(FALSE); // Hide cursor when rotating
+        ShowCursor(FALSE); 
         return 0;
     case WM_RBUTTONUP:
         g_RightMouseDown = false;
@@ -68,10 +58,8 @@ bool Window::Initialize(int width, int height, std::wstring title) {
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = GetModuleHandle(nullptr);
     wc.lpszClassName = L"DX12EngineClass";
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW); // Make sure we have a visible cursor
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW); 
     RegisterClass(&wc);
-
-    // Adjust window size so client area matches requested width/height
     RECT rect = { 0, 0, width, height };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -109,5 +97,5 @@ HWND Window::GetHandle() const {
 }
 
 Window::~Window() {
-    // Optional cleanup
+
 }

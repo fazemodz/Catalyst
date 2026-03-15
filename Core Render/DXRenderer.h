@@ -8,11 +8,15 @@
 #include <wrl.h>
 #include <stdexcept> 
 #include <iostream>
-#include <memory> // <--- CRITICAL for shared_ptr
+#include <memory> 
 
-inline void ThrowIfFailed(HRESULT hr) {
-    if (FAILED(hr)) throw std::runtime_error("DirectX Error");
-}
+#include "../Error handler/Common.h" 
+#include "RenderTypes.h"      
+#include "Passes/AssetPreviewPass.h" 
+#include "Passes/ShadowPass.h" 
+#include "Passes/PostProcessPass.h" 
+#include "Passes/QuantaMeshPass.h" 
+#include "BindlessManager.h"
 
 #include "../Scene/Camera.h"
 #include "../Scene/GameObject.h"
@@ -39,7 +43,6 @@ private:
 
     int m_width, m_height;
 
-    // D3D12 Core
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<IDXGISwapChain3> m_swapChain;
@@ -47,54 +50,44 @@ private:
     ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
-
     ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
     ComPtr<ID3D12Resource> m_depthBuffer;
     
-    ComPtr<ID3D12RootSignature> m_rootSignature;
-    ComPtr<ID3D12PipelineState> m_pipelineState;
+    ShadowPass m_shadowPass;
+    PostProcessPass m_postProcessPass;
+    QuantaMeshPass m_quantaMeshPass;
+    AssetPreviewPass m_previewPass; 
+    BindlessManager m_bindlessManager;
 
-    // Assets
+    PostProcessSettings m_globalPP;
+
+    ComPtr<ID3D12DescriptorHeap> m_frameSrvHeap;
+    UINT m_srvDescriptorSize = 0;
+    UINT m_frameHeapOffset = 0; 
+
     std::map<std::string, Mesh*> m_primitives;
-    Texture* m_defaultTexture = nullptr; 
+    Texture* m_texWhite = nullptr; 
+    Texture* m_texNormal = nullptr;
+    Texture* m_texBlack = nullptr; 
     
-    // CRITICAL FIX: Smart Pointers prevent crashes when vector resizes
     std::vector<std::shared_ptr<Asset>> m_assets; 
-
-    // Shader Data
-    struct ConstantBufferData {
-        DirectX::XMMATRIX wvpMatrix;
-        DirectX::XMMATRIX worldMatrix; 
-        DirectX::XMFLOAT4 colorOverride;
-        
-        DirectX::XMFLOAT3 lightDir;      
-        float lightIntensity;            
-        
-        DirectX::XMFLOAT3 cameraPos;     
-        float visualizationMode; 
-    };
-
     ComPtr<ID3D12Resource> m_constantBuffer;
     UINT8* m_pCbvDataBegin = nullptr;
-
-    // Scene
     std::vector<GameObject> m_gameObjects;
     int m_selectedObjectIndex = -1;
 
     Camera m_camera;
     UIManager m_ui; 
 
-    // Sync
     ComPtr<ID3D12Fence> m_fence;
     HANDLE m_fenceEvent;
     uint64_t m_fenceValue = 0;
     uint32_t m_frameIndex = 0;
 
-    // Methods
     void PickObject(int mouseX, int mouseY);
     void CreateDepthBuffer();
-    void CreateGraphicsPipeline(); 
-    void CreateDefaultTexture(); 
+    void CreateDefaultTextures(); 
     void CreateConstantBuffer();
+    void CreateFrameHeap();       
     void FlushGPU();
 };

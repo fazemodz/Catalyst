@@ -1,57 +1,45 @@
-# Catalyst Engine 🛠️
+# Catalyst Engine 🚀
 
-**Catalyst** is a custom C++ Game Engine built from scratch using **DirectX 12**. It features a modern, Unreal-style editor interface, real-time lighting, and a component-based architecture designed for learning low-level graphics programming and engine development.
+**Catalyst Engine** is a modern, custom-built 3D rendering engine powered by **DirectX 12** and **C++20**. It is designed around high-performance, GPU-driven rendering techniques, featuring a fully bindless resource architecture and compute-based frustum culling.
 
+## ✨ Key Features
 
+* **GPU-Driven Rendering Pipeline:** Utilizes Compute Shaders (`QuantaCull.hlsl`) for per-instance frustum culling, feeding directly into `ExecuteIndirect` for zero-CPU-overhead draw calls.
+* **Bindless Architecture:** A dynamic, unified Descriptor Heap manager that handles all textures, materials, and resources bindlessly, bypassing traditional DX12 slot binding bottlenecks.
+* **Modern Lighting & Environments:** Supports directional lighting, shadow mapping, and HDR skybox rendering. 
+* **Integrated UI & Editor:** Fully integrated with **Dear ImGui**, featuring real-time scene hierarchy management, object manipulation, and precise mouse-picking/raycasting for selecting 3D geometry in the viewport.
+* **Modular Render Passes:** * `QuantaMeshPass`: The core GPU-driven geometry pipeline.
+  * `ShadowPass`: Handles depth rendering for directional light shadows.
+  * `PostProcessPass`: Manages full-screen effects and render target transitions.
+  * `PreviewPass`: Renders UI overlays and editor-specific meshes.
 
-## 🌟 Features (Implemented)
+## 🛠️ Tech Stack & Dependencies
 
-### 🎨 **Core Rendering**
-- [x] **DirectX 12 Backend:** Custom D3D12 wrapper handling SwapChains, Command Queues, and Fences.
-- [x] **Shader Pipeline:** HLSL Vertex & Pixel shaders with Constant Buffers.
-- [x] **Lighting System:** Blinn-Phong lighting model with Directional Lights.
-- [x] **Normal Mapping:** Tangent-space normal mapping support for detailed surfaces.
-- [x] **Texture Support:** WIC-based loader for `.png`, `.jpg`, and `.bmp`.
+* **Language:** C++20
+* **Graphics API:** DirectX 12 (Shader Model 5.1+)
+* **Math Library:** DirectXMath
+* **Texture Processing:** [DirectXTex](https://github.com/microsoft/DirectXTex)
+* **UI:** [Dear ImGui](https://github.com/ocornut/imgui)
 
-### 🏗️ **Editor & UI**
-- [x] **ImGui Integration:** Fully interactive UI overlay.
-- [x] **Unreal-Style Layout:**
-    - **Viewport:** Resizeable 3D rendering area.
-    - **Outliner:** Hierarchy view with selection and context menus (Delete/Rename).
-    - **Details Panel:** Inspector for editing Transforms, Materials, and Light properties.
-    - **Content Browser:** File explorer with thumbnail previews.
-- [x] **Gizmos:** Integrated **ImGuizmo** for Translation, Rotation, and Scaling.
-- [x] **Drag & Drop:** Drag models and textures from the Content Browser directly into the scene or inspector slots.
+## 🚀 Getting Started
 
-### 📐 **Scene Management**
-- [x] **GameObject System:** Structure handling Mesh, Transform, and Material data.
-- [x] **Camera Controller:** "Fly Mode" camera (Hold Right-Click + WASD).
-- [x] **Object Picking:** Mouse picking using Ray-AABB (Axis Aligned Bounding Box) intersection.
-- [x] **Procedural Geometry:** Built-in generators for Cubes, Spheres, Cylinders, and Planes.
-- [x] **Place Actors Menu:** Dropdown menu to spawn primitives and lights.
+### Prerequisites
+* Windows 10/11
+* Visual Studio 2022 or JetBrains Rider
+* Windows 10 SDK (for DirectX 12 headers and libraries)
 
----
+### Building the Project
+1. Clone the repository.
+2. Open `Catalyst.sln` in Visual Studio or JetBrains Rider.
+3. Ensure the active build configuration is set to `Debug` or `Release` for `x64`.
+4. **Important Note on Shaders:** The engine uses `D3DCompileFromFile` to compile HLSL shaders at runtime. Ensure that all `.hlsl` files in the `Shaders/` folder have their Build Action / Item Type set to **`None`** (or "Does not participate in build") in your IDE to prevent the build system from attempting to compile them as static Vertex Shaders.
+5. Build and Run (`F5`).
 
-## 🚀 Roadmap (To Be Done)
+## 🎮 Controls
+* **Left Mouse Click:** Select objects in the 3D viewport (Raycasting).
+* **ImGui Panels:** Tweak object transforms, lighting intensity, and materials in real-time.
 
-### 🔮 **Rendering Upgrades**
-- [ ] **PBR Pipeline:** Upgrade from Blinn-Phong to Physically Based Rendering (Metallic/Roughness workflow).
-- [ ] **Shadow Mapping:** Implement directional shadow maps (Cascaded Shadow Maps).
-- [ ] **Multi-Texturing:** Robust descriptor heap management for binding Albedo, Normal, and Roughness maps simultaneously.
-- [ ] **Skybox:** Cube map support for environmental backgrounds.
-
-### ⚙️ **Engine Systems**
-- [ ] **Save/Load System:** Serialize scene data to JSON or YAML to persist changes.
-- [ ] **Physics Integration:** Replace simple AABB collisions with a real physics engine (e.g., PhysX or Jolt).
-- [ ] **Scripting:** Basic C# or Lua scripting support for game logic.
-- [ ] **Play Mode:** Separate "Editor State" from "Game State".
-
----
-
-## 🛠️ Tech Stack
-* **Language:** C++ (C++20 Standard)
-* **Graphics API:** DirectX 12
-* **GUI Library:** Dear ImGui + ImGuizmo
-* **Math:** DirectXMath
-* **Asset Loading:** tiny_obj_loader (Models), WIC (Textures)
-
+## 🚧 Roadmap / Current Focus
+* Stabilizing Compute Shader culling and offset memory alignments.
+* Expanding the Material system (PBR properties).
+* Enhancing the Post-Processing volume stack.

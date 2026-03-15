@@ -6,7 +6,8 @@
 #include <filesystem>
 #include <map> 
 #include <commdlg.h>
-#include <memory> // <--- NEW
+#include <memory> 
+#include <future> 
 
 #include "../Scene/GameObject.h"
 #include "../Scene/Asset.h" 
@@ -21,15 +22,20 @@ using Microsoft::WRL::ComPtr;
 class UIManager {
 public:
     void Initialize(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* commandQueue, int frameCount);
-    
-    // Updated signature for Smart Pointers
-    void Update(std::vector<GameObject>& gameObjects, std::vector<std::shared_ptr<Asset>>& assets, 
-                int& selectedIndex, const DirectX::XMMATRIX& viewMatrix, const DirectX::XMMATRIX& projMatrix);
+    void Update(std::vector<GameObject>& gameObjects, std::vector<std::shared_ptr<Asset>>& assets,
+                int& selectedIndex, const DirectX::XMMATRIX& viewMatrix, const DirectX::XMMATRIX& projMatrix,
+                D3D12_GPU_DESCRIPTOR_HANDLE previewTex, PostProcessSettings& globalPP);
     
     void Draw(ID3D12GraphicsCommandList* cmdList);
     void Shutdown();
 
+    Asset* GetEditingAsset() { return m_showAssetEditor ? m_editingAsset : nullptr; }
+    ID3D12DescriptorHeap* GetSRVHeap() { return m_srvHeap.Get(); }
     void SetPrimitives(const std::map<std::string, Mesh*>& primitives) { m_primitives = primitives; }
+
+    float GetPreviewYaw() const { return m_previewYaw; }
+    float GetPreviewPitch() const { return m_previewPitch; }
+    float GetPreviewDistance() const { return m_previewDistance; }
 
 private:
     ComPtr<ID3D12DescriptorHeap> m_srvHeap;
@@ -44,8 +50,26 @@ private:
 
     Asset* m_editingAsset = nullptr;
     bool m_showAssetEditor = false;
+    
+    float m_previewYaw = 0.0f;
+    float m_previewPitch = 0.4f; 
+    float m_previewDistance = 1.2f;
 
-    std::string OpenFileDialog();
+    ImGuizmo::OPERATION m_currentGizmoOp = ImGuizmo::TRANSLATE;
+    ImGuizmo::MODE m_currentGizmoMode = ImGuizmo::WORLD;
+
+    bool m_isImporting = false;
+    bool m_isImportingHDR = false;
+    std::string m_importStatus;
+    std::string m_pendingImportPath;
+    std::string m_pendingImportName;
+    std::future<Mesh*> m_importFuture;
+    std::future<Texture*> m_importHDRFuture; 
+
+    void StartImport(const std::string& path);
+    void StartImportHDR(const std::string& path); 
+    
+    std::string OpenFileDialog(const char* filter);
     void DrawContentBrowser(std::vector<GameObject>& gameObjects, std::vector<std::shared_ptr<Asset>>& assets); 
-    void DrawAssetEditorWindow(ID3D12Device* device, ID3D12CommandQueue* cmdQueue); 
+    void DrawAssetEditorWindow(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, D3D12_GPU_DESCRIPTOR_HANDLE previewTex); 
 };

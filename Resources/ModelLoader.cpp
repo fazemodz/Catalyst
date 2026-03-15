@@ -44,7 +44,7 @@ Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device, ID3D1
                 };
             } else { vertex.normal = { 0, 1, 0 }; }
 
-            vertex.tangent = { 1.0f, 0.0f, 0.0f }; // Default Tangent
+            vertex.tangent = { 1.0f, 0.0f, 0.0f }; 
 
             vertices.push_back(vertex);
             indices.push_back(static_cast<uint32_t>(indices.size())); 
@@ -52,6 +52,6 @@ Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device, ID3D1
     }
 
     Mesh* newMesh = new Mesh();
-    newMesh->Initialize(device, cmdQueue, vertices, indices); // Pass Queue
+    newMesh->Initialize(device, cmdQueue, vertices, indices);
     return newMesh;
 }
