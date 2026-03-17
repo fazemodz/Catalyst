@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <DirectXMath.h>
-#include "../../Error handler/Common.h"
+#include "Common.h"
 
 using namespace DirectX;
 

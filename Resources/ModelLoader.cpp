@@ -1,6 +1,6 @@
 #include "ModelLoader.h"
 #define TINYOBJLOADER_IMPLEMENTATION
-#include "../Lib/tiny_obj_loader.h" 
+#include "tiny_obj_loader.h" 
 
 Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {
     tinyobj::attrib_t attrib;

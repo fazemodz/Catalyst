@@ -1,6 +1,6 @@
 #define NOMINMAX
 #include "Camera.h"
-#include "imgui.h" // We need to check if UI is blocking us
+#include "imgui.h" 
 #include <algorithm>
 
 using namespace DirectX;
@@ -25,7 +25,7 @@ void Camera::Update(float deltaTime) {
             // Just started flying: Capture initial mouse position
             GetCursorPos(&m_lastMousePos);
             m_isFlying = true;
-            ShowCursor(FALSE); // Hide cursor
+            ShowCursor(FALSE);
         }
 
         // 2. Handle Rotation (Mouse Look)
@@ -37,8 +37,8 @@ void Camera::Update(float deltaTime) {
 
         // Sensitivity
         float sensitivity = 0.002f;
-        m_rotation.y += dx * sensitivity; // Yaw
-        m_rotation.x += dy * sensitivity; // Pitch
+        m_rotation.y += dx * sensitivity; 
+        m_rotation.x += dy * sensitivity; 
 
         // Clamp Pitch (Prevent backflip)
         m_rotation.x = std::max(-1.5f, std::min(1.5f, m_rotation.x));
@@ -48,7 +48,7 @@ void Camera::Update(float deltaTime) {
 
         // 3. Handle Movement (WASD)
         float speed = 5.0f * deltaTime;
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) speed *= 2.0f; // Sprint
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) speed *= 2.0f; 
 
         XMVECTOR pos = XMLoadFloat3(&m_position);
         XMVECTOR forward = XMVectorSet(0, 0, 1, 0);

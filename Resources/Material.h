@@ -3,7 +3,7 @@
 #include <vector>
 #include <unordered_map>
 #include <DirectXMath.h>
-#include "../Core Render/RenderTypes.h"
+#include "RenderTypes.h"
 
 enum class PropertyType { Float, Vector4, Texture };
 

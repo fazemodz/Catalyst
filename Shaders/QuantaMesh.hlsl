@@ -1,126 +1,129 @@
-// ============================================================================
-// QuantaMesh: GPU-Driven, Bindless Uber-Shader
-// ============================================================================
+// ==========================================
+// QUANTA MESH SHADER
+// ==========================================
 
-// Bindless Textures: One global array of textures.
-// We use 'space1' to avoid register collisions with your shadow maps or global textures.
-Texture2D BindlessTextures[1024] : register(t0, space1);
-
-// Standard samplers for materials and shadow filtering
-SamplerState sampl                     : register(s0);
-SamplerComparisonState shadowSampler   : register(s1); 
-
-// Global Scene Data
-cbuffer GlobalBuffer : register(b0) {
-    matrix viewProj;
-    matrix lightSpaceMatrix;
+cbuffer GlobalBufferData : register(b0) {
+    float4x4 viewProj;
+    float4x4 lightSpaceMatrix;
     float3 lightDir;
     float lightIntensity;
     float3 cameraPos;
-    float globalPadding;
+    float padding;
 };
 
-// Material-specific data (The "Unreal-style" property block)
 cbuffer MaterialConstants : register(b1) {
     float4 materialColor;
-    float  metallic;
-    float  roughness;
-    uint   albedoIndex;
-    uint   normalIndex;
-    uint   metallicIndex;
-    uint   roughnessIndex;
-    float4 materialPadding;
+    float metallic;
+    float roughness;
+    uint albedoIndex;
+    uint normalIndex;
+    uint metallicIndex;
+    uint roughnessIndex;
+    float2 padding2;
 };
 
-// The GPU array of objects populated by the Compute Shader
+// The Magic Fix! Grabbing the exact ID from the Root Constant
+cbuffer InstanceData : register(b2) {
+    uint globalInstanceID;
+};
+
 struct ObjectData {
-    matrix worldMatrix;
-    float4 colorOverride;
-    float3 center;
-    float radius;
-    uint indexCount;
-    uint startIndexLocation;
-    int baseVertexLocation;
-    uint padding;
+    float4x4 worldMatrix;        
+    float4 colorOverride;        
+    float3 center;               
+    float radius;                
+    uint indexCount;             
+    uint startIndexLocation;     
+    int baseVertexLocation;      
+    uint padding;                
 };
 
 StructuredBuffer<ObjectData> ObjectBuffer : register(t0);
 
-// Shadow Map (Explicitly bound, not bindless)
-Texture2D shadowMap : register(t7); 
+// Bindless & Shadows
+Texture2D BindlessTextures[1024] : register(t0, space1);
+SamplerState LinearSampler : register(s0);
+Texture2D ShadowMap : register(t7);
+SamplerComparisonState ShadowSampler : register(s1);
 
 struct VS_IN {
-    float3 pos     : POSITION;
-    float4 color   : COLOR;
-    float2 uv      : TEXCOORD;
-    float3 normal  : NORMAL;
+    float3 pos : POSITION;
+    float4 color : COLOR;
+    float2 uv : TEXCOORD;
+    float3 normal : NORMAL;
     float3 tangent : TANGENT;
 };
 
 struct PS_IN {
-    float4 pos      : SV_POSITION;
+    float4 pos : SV_POSITION;
     float4 worldPos : POSITION;
-    float4 color    : COLOR;
-    float2 uv       : TEXCOORD;
-    float3 normal   : NORMAL;
-    float3 tangent  : TANGENT;
-    uint   instanceID : INSTANCE_ID;
+    float4 color : COLOR;
+    float2 uv : TEXCOORD;
+    float3 normal : NORMAL;
+    float3 tangent : TANGENT;
+    uint instanceID : BLENDINDICES; 
 };
 
-PS_IN VSMain(VS_IN input, uint instanceID : SV_InstanceID) {
+// NOTICE: SV_InstanceID is completely removed!
+PS_IN VSMain(VS_IN input) {
     PS_IN output;
     
-    // Fetch object data via Indirect Index
-    ObjectData obj = ObjectBuffer[instanceID];
+    // Fetch the specific object using the hardware-injected ID
+    ObjectData obj = ObjectBuffer[globalInstanceID];
     
     float4 worldPos = mul(float4(input.pos, 1.0f), obj.worldMatrix);
     output.pos = mul(worldPos, viewProj);
     output.worldPos = worldPos;
+    
     output.color = obj.colorOverride * materialColor;
     output.uv = input.uv;
     output.normal = mul(input.normal, (float3x3)obj.worldMatrix);
     output.tangent = mul(input.tangent, (float3x3)obj.worldMatrix);
-    output.instanceID = instanceID;
+    
+    output.instanceID = globalInstanceID;
     
     return output;
 }
 
-float4 PSMain(PS_IN input) : SV_TARGET {
-    // Fetch textures using Bindless IDs
-    float4 albedo = BindlessTextures[albedoIndex].Sample(sampl, input.uv) * input.color;
-    float3 N = normalize(input.normal);
-    float3 L = normalize(-lightDir);
-    float3 V = normalize(cameraPos - input.worldPos.xyz);
+float ShadowCalculation(float4 worldPos) {
+    float shadow = 0.0f; 
     
-    // Basic Diffuse Lighting
-    float nDotL = max(dot(N, L), 0.0);
-    float3 diffuse = albedo.rgb * nDotL * lightIntensity;
-    float3 ambient = albedo.rgb * 0.1;
+    float4 lightSpacePos = mul(worldPos, lightSpaceMatrix);
+    float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+    projCoords.x =  projCoords.x * 0.5f + 0.5f;
+    projCoords.y = -projCoords.y * 0.5f + 0.5f;
 
-    // Shadow Calculation
-    float4 posLightSpace = mul(float4(input.worldPos.xyz, 1.0), lightSpaceMatrix);
-    float3 projCoords = posLightSpace.xyz / posLightSpace.w;
-    projCoords.x = projCoords.x * 0.5 + 0.5;
-    projCoords.y = -projCoords.y * 0.5 + 0.5;
-
-    float shadow = 1.0;
-    if(projCoords.z <= 1.0 && projCoords.x >= 0.0 && projCoords.x <= 1.0 && projCoords.y >= 0.0 && projCoords.y <= 1.0) {
-        float currentDepth = projCoords.z;
-        float bias = max(0.005 * (1.0 - dot(N, L)), 0.001);
-        float2 texelSize = 1.0 / 2048.0;
-        float shadowSum = 0.0;
-        for(int x = -1; x <= 1; ++x) {
-            for(int y = -1; y <= 1; ++y) {
-                shadowSum += shadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + float2(x, y) * texelSize, currentDepth - bias);
-            }
-        }
-        shadow = shadowSum / 9.0;
+    // If outside the shadow map frustum, return 1.0f (no shadow) instead of 0.0f (pitch black)
+    if(projCoords.z > 1.0f) {
+        return 1.0f; 
     }
-    float d1 = BindlessTextures[normalIndex].Sample(sampl, input.uv).r;
-    float d2 = BindlessTextures[metallicIndex].Sample(sampl, input.uv).r;
-    float d3 = BindlessTextures[roughnessIndex].Sample(sampl, input.uv).r;
 
-    float3 finalColor = ambient + (diffuse * shadow) + (d1+d2+d3) * 0.000001f;
+    float currentDepth = projCoords.z;
+    float bias = max(0.005f * (1.0f - dot(float3(0,1,0), -lightDir)), 0.001f);
     
+    float2 texelSize = 1.0f / 2048.0f; 
+    
+    [unroll]
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            float2 uv = projCoords.xy + float2(x,y) * texelSize;
+            shadow += ShadowMap.SampleCmpLevelZero(ShadowSampler, uv, currentDepth - bias);
+        }
+    }
+    return shadow / 9.0f;
+}
+
+float4 PSMain(PS_IN input) : SV_TARGET {
+    float4 albedo = BindlessTextures[albedoIndex].Sample(LinearSampler, input.uv) * input.color;
+    
+    float3 norm = normalize(input.normal);
+    float diff = max(dot(norm, -lightDir), 0.0);
+    
+    float shadow = ShadowCalculation(input.worldPos);
+    
+    float3 ambient = float3(0.2, 0.2, 0.2) * albedo.rgb;
+    float3 diffuse = diff * albedo.rgb * lightIntensity * shadow;
+    
+    float3 finalColor = ambient + diffuse;
     return float4(finalColor, albedo.a);
 }

@@ -7,10 +7,9 @@ enum class ObjectType { Mesh, Light, Skybox, PostProcessVolume };
 struct PostProcessSettings {
     float exposure = 1.0f;
     DirectX::XMFLOAT3 colorTint = {1.0f, 1.0f, 1.0f};
-
-    // --- NEW: Bloom Settings ---
-    float bloomThreshold = 1.0f; // Minimum brightness to start glowing
-    float bloomIntensity = 0.5f; // How bright the glow is
+    
+    float bloomThreshold = 1.0f; 
+    float bloomIntensity = 0.5f; 
 
     float blendRadius = 1.0f;
 };

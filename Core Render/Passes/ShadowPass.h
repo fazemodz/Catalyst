@@ -3,8 +3,8 @@
 #include <directxmath.h>
 #include <wrl.h>
 #include <vector>
-#include "../RenderTypes.h"
-#include "../../Scene/GameObject.h"
+#include "RenderTypes.h"
+#include "GameObject.h"
 
 using Microsoft::WRL::ComPtr;
 

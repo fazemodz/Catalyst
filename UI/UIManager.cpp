@@ -6,8 +6,8 @@
 #include <cctype>
 #include <thread> 
 #include <chrono> 
-#include "../Resources/ModelLoader.h"
-#include "../Resources/Texture.h"
+#include "ModelLoader.h"
+#include "Texture.h"
 
 using namespace DirectX;
 namespace fs = std::filesystem;
@@ -89,8 +89,14 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, std::vector<std::sh
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) { if (ImGui::MenuItem("Import 3D Model...")) StartImport(OpenFileDialog("3D Models\0*.obj;*.fbx\0All Files\0*.*\0")); if (ImGui::MenuItem("Import HDR Skybox...")) StartImportHDR(OpenFileDialog("HDR Images\0*.hdr\0All Files\0*.*\0")); ImGui::Separator(); if (ImGui::MenuItem("Exit")) PostQuitMessage(0); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Place Actors")) {
+            ImGui::SeparatorText("Basic Objects");
+            
             auto SpawnPrimitive = [&](const std::string& assetName, const std::string& objName) { Asset* asset = FindAssetByName(assets, assetName); if (asset) { GameObject newObj; newObj.name = objName; newObj.asset = asset; newObj.type = ObjectType::Mesh; gameObjects.push_back(newObj); } };
-            if (ImGui::MenuItem("Cube")) SpawnPrimitive("Basic Cube", "Cube"); if (ImGui::MenuItem("Sphere")) SpawnPrimitive("Basic Sphere", "Sphere"); if (ImGui::MenuItem("Plane")) SpawnPrimitive("Basic Plane", "Plane");
+            if (ImGui::MenuItem("Cube")) SpawnPrimitive("Basic Cube", "Cube"); 
+            if (ImGui::MenuItem("Sphere")) SpawnPrimitive("Basic Sphere", "Sphere"); 
+            if (ImGui::MenuItem("Plane")) SpawnPrimitive("Basic Plane", "Plane");
+            if (ImGui::MenuItem("Cylinder")) SpawnPrimitive("Basic Cylinder", "Cylinder");
+            
             ImGui::SeparatorText("Lights & Environment");
             if (ImGui::MenuItem("Directional Light")) { Asset* sphereAsset = FindAssetByName(assets, "Basic Sphere"); GameObject sun; sun.name = "Directional Light"; sun.position = {0, 10, 0}; sun.rotation = {1.57f, 0, 0}; sun.type = ObjectType::Light; sun.lightIntensity = 1.5f; sun.asset = sphereAsset; gameObjects.push_back(sun); }
             if (ImGui::MenuItem("Post-Process Volume")) { GameObject vol; vol.name = "Post-Process Volume"; vol.type = ObjectType::PostProcessVolume; vol.scale = {5.0f, 5.0f, 5.0f}; gameObjects.push_back(vol); }

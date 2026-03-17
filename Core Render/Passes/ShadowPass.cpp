@@ -1,8 +1,8 @@
 #include "ShadowPass.h"
 #include <d3dcompiler.h>
 #include <stdexcept>
-#include "../../Error handler/Common.h"
-#include "../../Resources/Mesh.h" 
+#include "Common.h"
+#include "Mesh.h" 
 
 void ShadowPass::Initialize(ID3D12Device* device) {
     CreateResources(device);

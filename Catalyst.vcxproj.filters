@@ -99,6 +99,21 @@
     <ClCompile Include="Core Render\Passes\AssetPreviewPass.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Launcher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Input\InputManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Render\FontManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Render\UIDrawList.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Render\UIRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Core Render\DXRenderer.h">
@@ -164,6 +179,21 @@
     <ClInclude Include="Core Render\Passes\AssetPreviewPass.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Launcher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Input\InputManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Render\FontManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Render\UIDrawList.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Render\UIRenderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\shaders.hlsl" />
@@ -173,5 +203,6 @@
     <None Include="Shaders\QuantaMesh.hlsl" />
     <None Include="Shaders\QuantaCull.hlsl" />
     <None Include="packages.config" />
+    <None Include="Shaders\UI.hlsl" />
   </ItemGroup>
 </Project>

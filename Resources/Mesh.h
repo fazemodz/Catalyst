@@ -26,6 +26,9 @@ using Microsoft::WRL::ComPtr;
 
 class Mesh {
 public:
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const Vertex* vertices, size_t vertexCount, const uint32_t* indices, size_t indexCount);
+    Mesh() = default; 
+
     void Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
 
     D3D12_VERTEX_BUFFER_VIEW GetVertexView() const;
@@ -38,6 +41,9 @@ public:
 private:
     ComPtr<ID3D12Resource> m_vertexBuffer;
     ComPtr<ID3D12Resource> m_indexBuffer;
+    ComPtr<ID3D12Resource> m_vertexUploadBuffer; 
+    ComPtr<ID3D12Resource> m_indexUploadBuffer;  
+    
     D3D12_VERTEX_BUFFER_VIEW m_vbView;
     D3D12_INDEX_BUFFER_VIEW m_ibView;
     uint32_t m_indexCount = 0;

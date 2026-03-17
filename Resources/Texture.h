@@ -3,7 +3,7 @@
 #include <wrl.h>
 #include <string>
 #include <DirectXMath.h>
-#include "../Error handler/Common.h"
+#include "../Error Handler/Common.h"
 
 using Microsoft::WRL::ComPtr;
 

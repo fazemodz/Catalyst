@@ -1,6 +1,6 @@
 #pragma once
 #include <directxmath.h>
-#include <windows.h> // Needed for GetCursorPos
+#include <windows.h> 
 
 class Camera {
 public:

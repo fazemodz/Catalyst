@@ -3,11 +3,11 @@
 #include <wrl.h>
 #include <vector>
 #include <map>
-#include "../RenderTypes.h"
-#include "../../Scene/Camera.h"
-#include "../../Scene/GameObject.h"
-#include "../../Resources/Texture.h"
-#include "../../Resources/Mesh.h" 
+#include "RenderTypes.h"
+#include "Camera.h"
+#include "GameObject.h"
+#include "Texture.h"
+#include "Mesh.h" 
 
 using Microsoft::WRL::ComPtr;
 

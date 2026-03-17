@@ -1,175 +1,239 @@
 #include "PrimitiveGenerator.h"
 #include <cmath>
-#include <vector>
 
 using namespace DirectX;
-const float PI = 3.14159265359f;
 
-void PushVert(std::vector<Vertex>& v, float x, float y, float z, float u, float v_tex, float nx, float ny, float nz, float tx, float ty, float tz) {
-    Vertex vert;
-    vert.position = { x, y, z };
-    vert.color = { 1,1,1,1 };
-    vert.uv = { u, v_tex };
-    vert.normal = { nx, ny, nz };
-    vert.tangent = { tx, ty, tz }; 
-    v.push_back(vert);
-}
+MeshData PrimitiveGenerator::CreateCube(float width, float height, float depth, XMFLOAT4 color) {
+    MeshData mesh;
+    
+    float w2 = 0.5f * width;
+    float h2 = 0.5f * height;
+    float d2 = 0.5f * depth;
 
-Mesh* PrimitiveGenerator::CreateCube(ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {
-    std::vector<Vertex> verts;
-    // Front
-    PushVert(verts, -0.5f, -0.5f, -0.5f, 0, 1, 0, 0, -1, 1, 0, 0);
-    PushVert(verts, -0.5f,  0.5f, -0.5f, 0, 0, 0, 0, -1, 1, 0, 0);
-    PushVert(verts,  0.5f,  0.5f, -0.5f, 1, 0, 0, 0, -1, 1, 0, 0);
-    PushVert(verts,  0.5f, -0.5f, -0.5f, 1, 1, 0, 0, -1, 1, 0, 0);
-    // Back
-    PushVert(verts, -0.5f, -0.5f,  0.5f, 1, 1, 0, 0, 1, -1, 0, 0);
-    PushVert(verts,  0.5f, -0.5f,  0.5f, 0, 1, 0, 0, 1, -1, 0, 0);
-    PushVert(verts,  0.5f,  0.5f,  0.5f, 0, 0, 0, 0, 1, -1, 0, 0);
-    PushVert(verts, -0.5f,  0.5f,  0.5f, 1, 0, 0, 0, 1, -1, 0, 0);
-    // Top
-    PushVert(verts, -0.5f,  0.5f, -0.5f, 0, 1, 0, 1, 0, 1, 0, 0);
-    PushVert(verts, -0.5f,  0.5f,  0.5f, 0, 0, 0, 1, 0, 1, 0, 0);
-    PushVert(verts,  0.5f,  0.5f,  0.5f, 1, 0, 0, 1, 0, 1, 0, 0);
-    PushVert(verts,  0.5f,  0.5f, -0.5f, 1, 1, 0, 1, 0, 1, 0, 0);
-    // Bottom
-    PushVert(verts, -0.5f, -0.5f, -0.5f, 1, 1, 0, -1, 0, 1, 0, 0);
-    PushVert(verts,  0.5f, -0.5f, -0.5f, 0, 1, 0, -1, 0, 1, 0, 0);
-    PushVert(verts,  0.5f, -0.5f,  0.5f, 0, 0, 0, -1, 0, 1, 0, 0);
-    PushVert(verts, -0.5f, -0.5f,  0.5f, 1, 0, 0, -1, 0, 1, 0, 0);
-    // Left
-    PushVert(verts, -0.5f, -0.5f,  0.5f, 0, 1, -1, 0, 0, 0, 0, -1);
-    PushVert(verts, -0.5f,  0.5f,  0.5f, 0, 0, -1, 0, 0, 0, 0, -1);
-    PushVert(verts, -0.5f,  0.5f, -0.5f, 1, 0, -1, 0, 0, 0, 0, -1);
-    PushVert(verts, -0.5f, -0.5f, -0.5f, 1, 1, -1, 0, 0, 0, 0, -1);
-    // Right
-    PushVert(verts,  0.5f, -0.5f, -0.5f, 0, 1, 1, 0, 0, 0, 0, 1);
-    PushVert(verts,  0.5f,  0.5f, -0.5f, 0, 0, 1, 0, 0, 0, 0, 1);
-    PushVert(verts,  0.5f,  0.5f,  0.5f, 1, 0, 1, 0, 0, 0, 0, 1);
-    PushVert(verts,  0.5f, -0.5f,  0.5f, 1, 1, 1, 0, 0, 0, 0, 1);
-
-    std::vector<uint32_t> indices = {
-        0,1,2, 0,2,3, 4,5,6, 4,6,7, 8,9,10, 8,10,11, 
-        12,13,14, 12,14,15, 16,17,18, 16,18,19, 20,21,22, 20,22,23
+    // 24 Vertices (4 per face to maintain sharp normals and separate UVs)
+    mesh.Vertices = {
+        // Front Face
+        { XMFLOAT3(-w2, -h2, -d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-w2, +h2, -d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, +h2, -d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, -h2, -d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        // Back Face
+        { XMFLOAT3(-w2, -h2, +d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, -h2, +d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, +h2, +d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-w2, +h2, +d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        // Top Face
+        { XMFLOAT3(-w2, +h2, -d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-w2, +h2, +d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, +h2, +d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, +h2, -d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        // Bottom Face
+        { XMFLOAT3(-w2, -h2, -d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, -1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, -h2, -d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, -1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, -h2, +d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(0.0f, -1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-w2, -h2, +d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, -1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        // Left Face
+        { XMFLOAT3(-w2, -h2, +d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(-w2, +h2, +d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(-w2, +h2, -d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(-w2, -h2, -d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        // Right Face
+        { XMFLOAT3(+w2, -h2, -d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(+w2, +h2, -d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(+w2, +h2, +d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(+w2, -h2, +d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) }
     };
 
-    Mesh* mesh = new Mesh();
-    mesh->Initialize(device, cmdQueue, verts, indices);
+    mesh.Indices = {
+        0, 1, 2, 0, 2, 3,       // Front
+        4, 5, 6, 4, 6, 7,       // Back
+        8, 9, 10, 8, 10, 11,    // Top
+        12, 13, 14, 12, 14, 15, // Bottom
+        16, 17, 18, 16, 18, 19, // Left
+        20, 21, 22, 20, 22, 23  // Right
+    };
+
     return mesh;
 }
 
-Mesh* PrimitiveGenerator::CreatePlane(ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {
-    std::vector<Vertex> verts;
-    PushVert(verts, -5.0f, 0.0f, -5.0f, 0, 10, 0,1,0, 1,0,0);
-    PushVert(verts, -5.0f, 0.0f,  5.0f, 0, 0,  0,1,0, 1,0,0);
-    PushVert(verts,  5.0f, 0.0f,  5.0f, 10, 0, 0,1,0, 1,0,0);
-    PushVert(verts,  5.0f, 0.0f, -5.0f, 10, 10, 0,1,0, 1,0,0);
+MeshData PrimitiveGenerator::CreatePlane(float width, float depth, XMFLOAT4 color) {
+    MeshData mesh;
+    float w2 = 0.5f * width;
+    float d2 = 0.5f * depth;
 
-    std::vector<uint32_t> indices = { 0, 1, 2, 0, 2, 3 };
-    Mesh* mesh = new Mesh();
-    mesh->Initialize(device, cmdQueue, verts, indices);
+    mesh.Vertices = {
+        { XMFLOAT3(-w2, 0.0f, -d2), color, XMFLOAT2(0.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-w2, 0.0f, +d2), color, XMFLOAT2(0.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, 0.0f, +d2), color, XMFLOAT2(1.0f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(+w2, 0.0f, -d2), color, XMFLOAT2(1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) }
+    };
+
+    mesh.Indices = { 0, 1, 2, 0, 2, 3 };
     return mesh;
 }
 
-Mesh* PrimitiveGenerator::CreateSphere(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, int slices, int stacks) {
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+MeshData PrimitiveGenerator::CreateSphere(float radius, uint32_t sliceCount, uint32_t stackCount, XMFLOAT4 color) {
+    MeshData mesh;
+    
+    // Top pole
+    mesh.Vertices.push_back({ XMFLOAT3(0.0f, radius, 0.0f), color, XMFLOAT2(0.5f, 0.0f), XMFLOAT3(0.0f, 1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) });
 
-    float phiStep = PI / stacks;
-    float thetaStep = 2.0f * PI / slices;
+    float phiStep = XM_PI / stackCount;
+    float thetaStep = XM_2PI / sliceCount;
 
-    for (int i = 0; i <= stacks; i++) {
+    for (uint32_t i = 1; i <= stackCount - 1; ++i) {
         float phi = i * phiStep;
-        for (int j = 0; j <= slices; j++) {
+        for (uint32_t j = 0; j <= sliceCount; ++j) {
             float theta = j * thetaStep;
+            Vertex v;
+            v.position.x = radius * sinf(phi) * cosf(theta);
+            v.position.y = radius * cosf(phi);
+            v.position.z = radius * sinf(phi) * sinf(theta);
+            v.color = color;
+            v.uv.x = theta / XM_2PI;
+            v.uv.y = phi / XM_PI;
+            
+            XMVECTOR p = XMLoadFloat3(&v.position);
+            XMStoreFloat3(&v.normal, XMVector3Normalize(p));
 
-            float x = sinf(phi) * cosf(theta);
-            float y = cosf(phi);
-            float z = sinf(phi) * sinf(theta);
-            float u = (float)j / slices;
-            float v = (float)i / stacks;
-
-            float tx = -sinf(theta); float ty = 0.0f; float tz = cosf(theta);
-
-            PushVert(vertices, x*0.5f, y*0.5f, z*0.5f, u, v, x,y,z, tx,ty,tz);
+            v.tangent.x = -radius * sinf(phi) * sinf(theta);
+            v.tangent.y = 0.0f;
+            v.tangent.z = +radius * sinf(phi) * cosf(theta);
+            XMVECTOR t = XMLoadFloat3(&v.tangent);
+            XMStoreFloat3(&v.tangent, XMVector3Normalize(t));
+            
+            mesh.Vertices.push_back(v);
         }
     }
 
-    for (int i = 0; i < stacks; i++) {
-        for (int j = 0; j < slices; j++) {
-            uint32_t i0 = i * (slices + 1) + j;
-            uint32_t i1 = i0 + 1;
-            uint32_t i2 = (i + 1) * (slices + 1) + j;
-            uint32_t i3 = i2 + 1;
-            indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
-            indices.push_back(i2); indices.push_back(i1); indices.push_back(i3);
+    // Bottom pole
+    mesh.Vertices.push_back({ XMFLOAT3(0.0f, -radius, 0.0f), color, XMFLOAT2(0.5f, 1.0f), XMFLOAT3(0.0f, -1.0f, 0.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) });
+
+    // Indices for top pole
+    for (uint32_t i = 1; i <= sliceCount; ++i) {
+        mesh.Indices.push_back(0);
+        mesh.Indices.push_back(i + 1);
+        mesh.Indices.push_back(i);
+    }
+
+    // Indices for rings
+    uint32_t baseIndex = 1;
+    uint32_t ringVertexCount = sliceCount + 1;
+    for (uint32_t i = 0; i < stackCount - 2; ++i) {
+        for (uint32_t j = 0; j < sliceCount; ++j) {
+            mesh.Indices.push_back(baseIndex + i * ringVertexCount + j);
+            mesh.Indices.push_back(baseIndex + i * ringVertexCount + j + 1);
+            mesh.Indices.push_back(baseIndex + (i + 1) * ringVertexCount + j);
+
+            mesh.Indices.push_back(baseIndex + (i + 1) * ringVertexCount + j);
+            mesh.Indices.push_back(baseIndex + i * ringVertexCount + j + 1);
+            mesh.Indices.push_back(baseIndex + (i + 1) * ringVertexCount + j + 1);
         }
     }
-    
-    Mesh* mesh = new Mesh();
-    mesh->Initialize(device, cmdQueue, vertices, indices);
+
+    // Indices for bottom pole
+    uint32_t southPoleIndex = (uint32_t)mesh.Vertices.size() - 1;
+    baseIndex = southPoleIndex - ringVertexCount;
+    for (uint32_t i = 0; i < sliceCount; ++i) {
+        mesh.Indices.push_back(southPoleIndex);
+        mesh.Indices.push_back(baseIndex + i);
+        mesh.Indices.push_back(baseIndex + i + 1);
+    }
+
     return mesh;
 }
+MeshData PrimitiveGenerator::CreateCylinder(float radius, float height, uint32_t sliceCount, XMFLOAT4 color) {
+    MeshData mesh;
+    float halfHeight = height * 0.5f;
+    float dTheta = XM_2PI / sliceCount;
 
-Mesh* PrimitiveGenerator::CreateCylinder(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, float bottomRadius, float topRadius, float height, int sliceCount, int stackCount) {
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
+    // 1. Build side wall (tube)
+    for (uint32_t i = 0; i <= sliceCount; ++i) {
+        float c = cosf(i * dTheta);
+        float s = sinf(i * dTheta);
 
-    float stackHeight = height / stackCount;
-    float radiusStep = (topRadius - bottomRadius) / stackCount;
-    float ringCount = stackCount + 1;
+        // Bottom ring vertex
+        Vertex v0;
+        v0.position = XMFLOAT3(radius * c, -halfHeight, radius * s);
+        v0.color = color;
+        v0.uv = XMFLOAT2((float)i / sliceCount, 1.0f);
+        v0.normal = XMFLOAT3(c, 0.0f, s);
+        v0.tangent = XMFLOAT3(-s, 0.0f, c);
+        mesh.Vertices.push_back(v0);
 
-    for (int i = 0; i < ringCount; ++i) {
-        float y = -0.5f * height + i * stackHeight;
-        float r = bottomRadius + i * radiusStep;
-        float dTheta = 2.0f * PI / sliceCount;
-
-        for (int j = 0; j <= sliceCount; ++j) {
-            float c = cosf(j * dTheta); float s = sinf(j * dTheta);
-            float u = (float)j / sliceCount; float v = 1.0f - (float)i / stackCount;
-            float tx = -s; float ty = 0.0f; float tz = c;
-            PushVert(vertices, r * c, y, r * s, u, v, c, 0, s, tx, ty, tz);
-        }
+        // Top ring vertex
+        Vertex v1;
+        v1.position = XMFLOAT3(radius * c, halfHeight, radius * s);
+        v1.color = color;
+        v1.uv = XMFLOAT2((float)i / sliceCount, 0.0f);
+        v1.normal = XMFLOAT3(c, 0.0f, s);
+        v1.tangent = XMFLOAT3(-s, 0.0f, c);
+        mesh.Vertices.push_back(v1);
     }
 
-    int ringVertexCount = sliceCount + 1;
-    for (int i = 0; i < stackCount; ++i) {
-        for (int j = 0; j < sliceCount; ++j) {
-            uint32_t i0 = i * ringVertexCount + j;
-            uint32_t i1 = i0 + 1;
-            uint32_t i2 = (i + 1) * ringVertexCount + j;
-            uint32_t i3 = i2 + 1;
-            indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
-            indices.push_back(i2); indices.push_back(i1); indices.push_back(i3);
-        }
+    for (uint32_t i = 0; i < sliceCount; ++i) {
+        mesh.Indices.push_back(i * 2);
+        mesh.Indices.push_back((i * 2) + 2);
+        mesh.Indices.push_back((i * 2) + 1);
+
+        mesh.Indices.push_back((i * 2) + 1);
+        mesh.Indices.push_back((i * 2) + 2);
+        mesh.Indices.push_back((i * 2) + 3);
     }
 
-    uint32_t baseIndex = (uint32_t)vertices.size();
-    float y = 0.5f * height; float dTheta = 2.0f * PI / sliceCount;
+    // 2. Build top cap
+    uint32_t baseIndex = (uint32_t)mesh.Vertices.size();
+    Vertex topCenter;
+    topCenter.position = XMFLOAT3(0.0f, halfHeight, 0.0f);
+    topCenter.color = color;
+    topCenter.uv = XMFLOAT2(0.5f, 0.5f);
+    topCenter.normal = XMFLOAT3(0.0f, 1.0f, 0.0f);
+    topCenter.tangent = XMFLOAT3(1.0f, 0.0f, 0.0f);
+    mesh.Vertices.push_back(topCenter);
 
-    PushVert(vertices, 0, y, 0, 0.5f, 0.5f, 0, 1, 0, 1, 0, 0);
-    for (int i = 0; i <= sliceCount; ++i) {
-        float x = topRadius * cosf(i * dTheta); float z = topRadius * sinf(i * dTheta);
-        float u = x / height + 0.5f; float v = z / height + 0.5f;
-        PushVert(vertices, x, y, z, u, v, 0, 1, 0, 1, 0, 0);
+    for (uint32_t i = 0; i <= sliceCount; ++i) {
+        float c = cosf(i * dTheta);
+        float s = sinf(i * dTheta);
+        Vertex v;
+        v.position = XMFLOAT3(radius * c, halfHeight, radius * s);
+        v.color = color;
+        v.uv = XMFLOAT2(c * 0.5f + 0.5f, s * 0.5f + 0.5f);
+        v.normal = XMFLOAT3(0.0f, 1.0f, 0.0f);
+        v.tangent = XMFLOAT3(1.0f, 0.0f, 0.0f);
+        mesh.Vertices.push_back(v);
     }
-    for (int i = 0; i < sliceCount; ++i) {
-        indices.push_back(baseIndex); indices.push_back(baseIndex + i + 1); indices.push_back(baseIndex + i + 2);
-    }
-    
-    baseIndex = (uint32_t)vertices.size();
-    y = -0.5f * height;
-    PushVert(vertices, 0, y, 0, 0.5f, 0.5f, 0, -1, 0, 1, 0, 0);
-    for (int i = 0; i <= sliceCount; ++i) {
-        float x = bottomRadius * cosf(i * dTheta); float z = bottomRadius * sinf(i * dTheta);
-        float u = x / height + 0.5f; float v = z / height + 0.5f;
-        PushVert(vertices, x, y, z, u, v, 0, -1, 0, 1, 0, 0);
-    }
-    for (int i = 0; i < sliceCount; ++i) {
-        indices.push_back(baseIndex); indices.push_back(baseIndex + i + 2); indices.push_back(baseIndex + i + 1);
+    for (uint32_t i = 0; i < sliceCount; ++i) {
+        mesh.Indices.push_back(baseIndex);
+        mesh.Indices.push_back(baseIndex + i + 1);
+        mesh.Indices.push_back(baseIndex + i + 2);
     }
 
-    Mesh* mesh = new Mesh();
-    mesh->Initialize(device, cmdQueue, vertices, indices);
+    // 3. Build bottom cap
+    baseIndex = (uint32_t)mesh.Vertices.size();
+    Vertex bottomCenter;
+    bottomCenter.position = XMFLOAT3(0.0f, -halfHeight, 0.0f);
+    bottomCenter.color = color;
+    bottomCenter.uv = XMFLOAT2(0.5f, 0.5f);
+    bottomCenter.normal = XMFLOAT3(0.0f, -1.0f, 0.0f);
+    bottomCenter.tangent = XMFLOAT3(-1.0f, 0.0f, 0.0f);
+    mesh.Vertices.push_back(bottomCenter);
+
+    for (uint32_t i = 0; i <= sliceCount; ++i) {
+        float c = cosf(i * dTheta);
+        float s = sinf(i * dTheta);
+        Vertex v;
+        v.position = XMFLOAT3(radius * c, -halfHeight, radius * s);
+        v.color = color;
+        v.uv = XMFLOAT2(c * 0.5f + 0.5f, s * 0.5f + 0.5f);
+        v.normal = XMFLOAT3(0.0f, -1.0f, 0.0f);
+        v.tangent = XMFLOAT3(-1.0f, 0.0f, 0.0f);
+        mesh.Vertices.push_back(v);
+    }
+    for (uint32_t i = 0; i < sliceCount; ++i) {
+        mesh.Indices.push_back(baseIndex);
+        mesh.Indices.push_back(baseIndex + i + 2);
+        mesh.Indices.push_back(baseIndex + i + 1);
+    }
+
     return mesh;
 }

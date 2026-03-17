@@ -1,6 +1,6 @@
 #include "AssetPreviewPass.h"
 #include <directxmath.h>
-#include "../Error handler/Common.h"
+#include "../Error Handler/Common.h"
 #include "../Resources/Mesh.h"
 
 using namespace DirectX;

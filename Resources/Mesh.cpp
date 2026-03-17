@@ -3,8 +3,84 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
+#include <DirectXMath.h>
 
 using namespace DirectX;
+
+// =========================================================================
+//  PROCEDURAL MESHES
+// =========================================================================
+Mesh::Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const Vertex* vertices, size_t vertexCount, const uint32_t* indices, size_t indexCount) {
+    m_indexCount = static_cast<uint32_t>(indexCount);
+
+    UINT vbSize = static_cast<UINT>(vertexCount * sizeof(Vertex));
+    UINT ibSize = static_cast<UINT>(indexCount * sizeof(uint32_t));
+
+    // Create Default and Upload Heaps for Vertices
+    D3D12_HEAP_PROPERTIES defaultHeap = { D3D12_HEAP_TYPE_DEFAULT };
+    D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
+    D3D12_RESOURCE_DESC vDesc = { D3D12_RESOURCE_DIMENSION_BUFFER, 0, vbSize, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
+    
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_vertexBuffer));
+    device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_vertexUploadBuffer));
+    
+    // Copy Vertex Data
+    void* pData;
+    m_vertexUploadBuffer->Map(0, nullptr, &pData);
+    memcpy(pData, vertices, vbSize);
+    m_vertexUploadBuffer->Unmap(0, nullptr);
+    cmdList->CopyBufferRegion(m_vertexBuffer.Get(), 0, m_vertexUploadBuffer.Get(), 0, vbSize);
+
+    // Create Default and Upload Heaps for Indices
+    D3D12_RESOURCE_DESC iDesc = { D3D12_RESOURCE_DIMENSION_BUFFER, 0, ibSize, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &iDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_indexBuffer));
+    device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &iDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_indexUploadBuffer));
+
+    // Copy Index Data
+    m_indexUploadBuffer->Map(0, nullptr, &pData);
+    memcpy(pData, indices, ibSize);
+    m_indexUploadBuffer->Unmap(0, nullptr);
+    cmdList->CopyBufferRegion(m_indexBuffer.Get(), 0, m_indexUploadBuffer.Get(), 0, ibSize);
+
+    // Transition Buffers
+    D3D12_RESOURCE_BARRIER barriers[2] = {};
+    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[0].Transition.pResource = m_vertexBuffer.Get();
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    
+    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[1].Transition.pResource = m_indexBuffer.Get();
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    
+    cmdList->ResourceBarrier(2, barriers);
+
+    // Setup Views
+    m_vbView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
+    m_vbView.StrideInBytes = sizeof(Vertex);
+    m_vbView.SizeInBytes = vbSize;
+
+    m_ibView.BufferLocation = m_indexBuffer->GetGPUVirtualAddress();
+    m_ibView.SizeInBytes = ibSize;
+    m_ibView.Format = DXGI_FORMAT_R32_UINT;
+    
+    // Bounds Calculation
+    if (vertexCount > 0) {
+        XMVECTOR minV = XMLoadFloat3(&vertices[0].position);
+        XMVECTOR maxV = minV;
+        for (size_t i = 1; i < vertexCount; i++) {
+            XMVECTOR pos = XMLoadFloat3(&vertices[i].position);
+            minV = XMVectorMin(minV, pos);
+            maxV = XMVectorMax(maxV, pos);
+        }
+        XMVECTOR center = (minV + maxV) * 0.5f;
+        XMVECTOR extents = (maxV - minV) * 0.5f;
+        XMStoreFloat3(&m_bounds.Center, center);
+        XMStoreFloat3(&m_bounds.Extents, extents);
+    }
+}
+// =========================================================================
 
 ComPtr<ID3D12Resource> Mesh::CreateDefaultBuffer(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, const void* initData, UINT64 byteSize, ComPtr<ID3D12Resource>& uploadBuffer) {
     ComPtr<ID3D12Resource> defaultBuffer;

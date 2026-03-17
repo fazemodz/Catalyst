@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
-#include "Core Render/DXRenderer.h"
+#include "DXRenderer.h"
+#include "InputManager.h"
 
 class EngineApp {
 public:

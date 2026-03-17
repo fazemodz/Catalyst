@@ -1,70 +1,62 @@
+// ==========================================
+// QUANTA CULL COMPUTE SHADER
+// ==========================================
+
+cbuffer CullConstants : register(b0) {
+    float4x4 vp;
+    float3 camPos;
+    uint count;
+    uint globalStartIndex;
+};
+
 struct ObjectData {
-    matrix worldMatrix;
-    float4 colorOverride;
-    float3 center;
-    float radius;
-    uint indexCount;
+    float4x4 worldMatrix;        
+    float4 colorOverride;        
+    float3 center;               
+    float radius;                
+    uint indexCount;             
+    uint startIndexLocation;     
+    int baseVertexLocation;      
+    uint padding;                
+};
+
+// The new 24-byte structure containing the Root Constant ID at the top!
+struct IndirectCommand {
+    uint globalInstanceID;       // Sent to register b2 via Command Signature
+    uint indexCountPerInstance;
+    uint instanceCount;
     uint startIndexLocation;
     int baseVertexLocation;
-    uint padding;
+    uint startInstanceLocation;
 };
 
-struct DrawIndexedArgs {
-    uint IndexCountPerInstance;
-    uint InstanceCount;
-    uint StartIndexLocation;
-    int BaseVertexLocation;
-    uint StartInstanceLocation;
-};
-
-StructuredBuffer<ObjectData> InputObjects : register(t0);
-RWStructuredBuffer<DrawIndexedArgs> OutputCommands : register(u0);
-RWStructuredBuffer<uint> CommandCounter : register(u1);
-
-cbuffer CullParams : register(b0) {
-    matrix viewProj;
-    float3 cameraPos;
-    uint objectCount;
-};
+StructuredBuffer<ObjectData> objectBuffer : register(t0);
+RWStructuredBuffer<IndirectCommand> commandBuffer : register(u0);
+RWStructuredBuffer<uint> counterBuffer : register(u1);
 
 [numthreads(64, 1, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= objectCount) return;
-
-    ObjectData obj = InputObjects[id.x];
-
-    // Extract the 6 Frustum Planes from the ViewProj Matrix
-    float4 planes[6];
-    planes[0] = viewProj[3] + viewProj[0]; // Left
-    planes[1] = viewProj[3] - viewProj[0]; // Right
-    planes[2] = viewProj[3] + viewProj[1]; // Bottom
-    planes[3] = viewProj[3] - viewProj[1]; // Top
-    planes[4] = viewProj[2];               // Near
-    planes[5] = viewProj[3] - viewProj[2]; // Far
-
-    for(int i = 0; i < 6; i++) {
-        planes[i] /= length(planes[i].xyz);
-    }
-
+    if (id.x >= count) return;
+    
+    // Combine thread ID with the global C++ offset to find the exact object
+    uint globalId = id.x + globalStartIndex;
+    ObjectData obj = objectBuffer[globalId];
+    
+    // Frustum culling is permanently disabled here while we ensure engine stability
     bool visible = true;
-    for(int p = 0; p < 6; p++) {
-        if (dot(planes[p].xyz, obj.center) + planes[p].w < -(obj.radius * 1.5f)) {
-            visible = false;
-            break;
-        }
-    }
-
+    
     if (visible) {
-        uint index;
-        InterlockedAdd(CommandCounter[0], 1, index);
-
-        DrawIndexedArgs args;
-        args.IndexCountPerInstance = obj.indexCount;
-        args.InstanceCount = 1;
-        args.StartIndexLocation = obj.startIndexLocation;
-        args.BaseVertexLocation = obj.baseVertexLocation;
-        args.StartInstanceLocation = id.x; 
-
-        OutputCommands[index] = args;
+        uint commandIndex;
+        InterlockedAdd(counterBuffer[0], 1, commandIndex);
+        
+        // Write the ID directly into the buffer so the Command Signature can grab it!
+        commandBuffer[commandIndex].globalInstanceID = globalId; 
+        
+        // Standard draw arguments
+        commandBuffer[commandIndex].indexCountPerInstance = obj.indexCount;
+        commandBuffer[commandIndex].instanceCount = 1;
+        commandBuffer[commandIndex].startIndexLocation = obj.startIndexLocation;
+        commandBuffer[commandIndex].baseVertexLocation = obj.baseVertexLocation;
+        commandBuffer[commandIndex].startInstanceLocation = 0; 
     }
 }

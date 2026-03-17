@@ -2,9 +2,9 @@
 #include <d3d12.h>
 #include <wrl.h>
 #include <vector>
-#include "../RenderTypes.h"
-#include "../../Scene/Camera.h"
-#include "../../Scene/GameObject.h"
+#include "RenderTypes.h"
+#include "Camera.h"
+#include "GameObject.h"
 
 using Microsoft::WRL::ComPtr;
 
