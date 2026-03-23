@@ -28,7 +28,7 @@ class Mesh {
 public:
     Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const Vertex* vertices, size_t vertexCount, const uint32_t* indices, size_t indexCount);
     Mesh() = default; 
-
+    void Draw(ID3D12GraphicsCommandList* cmdList);
     void Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
 
     D3D12_VERTEX_BUFFER_VIEW GetVertexView() const;

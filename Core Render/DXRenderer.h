@@ -21,6 +21,7 @@
 #include "FontManager.h"
 #include "RenderTypes.h"
 #include "UIContext.h"
+#include "SkyboxPass.h"
 #include "../Launcher.h"
 
 using Microsoft::WRL::ComPtr;
@@ -39,7 +40,7 @@ public:
 
 private:
     static const int FrameCount = 2;
-
+    SkyboxPass m_skyboxPass;
     int m_width = 0;
     int m_height = 0;
     uint32_t m_frameIndex = 0;

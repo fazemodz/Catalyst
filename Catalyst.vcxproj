@@ -134,6 +134,7 @@
     <ClInclude Include="Core Render\Passes\PostProcessPass.h" />
     <ClInclude Include="Core Render\Passes\QuantaMeshPass.h" />
     <ClInclude Include="Core Render\Passes\ShadowPass.h" />
+    <ClInclude Include="Core Render\Passes\SkyboxPass.h" />
     <ClInclude Include="Core Render\RenderTypes.h" />
     <ClInclude Include="EngineApp.h" />
     <ClInclude Include="Error Handler\Common.h" />
@@ -238,6 +239,7 @@
     <ClCompile Include="Core Render\Passes\PostProcessPass.cpp" />
     <ClCompile Include="Core Render\Passes\QuantaMeshPass.cpp" />
     <ClCompile Include="Core Render\Passes\ShadowPass.cpp" />
+    <ClCompile Include="Core Render\Passes\SkyboxPass.cpp" />
     <ClCompile Include="Core Render\RenderTypes.cpp" />
     <ClCompile Include="Launcher.cpp" />
     <ClCompile Include="Lib/imgui/imgui.cpp" />
@@ -339,7 +341,7 @@
       <LinkCompiled>true</LinkCompiled>
     </ClCompile>
     <ClCompile Include="Scene\GameObject.cpp" />
-    <None Include="Shaders\skybox.hlsl">
+    <None Include="Shaders\Skybox.hlsl">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="Shaders\postprocess.hlsl">

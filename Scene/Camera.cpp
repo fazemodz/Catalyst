@@ -1,96 +1,78 @@
-#define NOMINMAX
 #include "Camera.h"
-#include "imgui.h" 
+#include <windows.h>
 #include <algorithm>
+
+// Hook into our custom Input Manager!
+extern InputManager* g_InputManager;
 
 using namespace DirectX;
 
-Camera::Camera() : m_position(0, 0, -5), m_rotation(0, 0, 0), m_isFlying(false) {
-    m_lastMousePos = { 0, 0 };
+Camera::Camera() : m_position(0.0f, 2.0f, -10.0f), m_yaw(0.0f), m_pitch(0.0f), 
+                   m_moveSpeed(15.0f), m_turnSpeed(0.005f), 
+                   m_lastMouseX(0), m_lastMouseY(0), m_isDragging(false) {
+    m_forward = {0.0f, 0.0f, 1.0f};
+    m_up = {0.0f, 1.0f, 0.0f};
+    m_right = {1.0f, 0.0f, 0.0f};
+    m_viewMatrix = XMMatrixIdentity();
+    m_projMatrix = XMMatrixIdentity();
 }
 
 void Camera::SetProjection(float fovDegrees, float aspectRatio, float nearZ, float farZ) {
-    float fovRadians = fovDegrees * (3.14159f / 180.0f);
-    m_projectionMatrix = XMMatrixPerspectiveFovLH(fovRadians, aspectRatio, nearZ, farZ);
+    m_projMatrix = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovDegrees), aspectRatio, nearZ, farZ);
 }
 
 void Camera::Update(float deltaTime) {
-    // 1. Check if we should enter "Fly Mode"
-    // We only fly if Right Click is held AND we aren't hovering a UI window (unless we are already flying)
-    bool rightClickDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    bool uiBlocking = ImGui::GetIO().WantCaptureMouse;
+    if (!g_InputManager) return;
 
-    if (rightClickDown && (!uiBlocking || m_isFlying)) {
-        if (!m_isFlying) {
-            // Just started flying: Capture initial mouse position
-            GetCursorPos(&m_lastMousePos);
-            m_isFlying = true;
-            ShowCursor(FALSE);
-        }
-
-        // 2. Handle Rotation (Mouse Look)
-        POINT currentMousePos;
-        GetCursorPos(&currentMousePos);
-
-        float dx = static_cast<float>(currentMousePos.x - m_lastMousePos.x);
-        float dy = static_cast<float>(currentMousePos.y - m_lastMousePos.y);
-
-        // Sensitivity
-        float sensitivity = 0.002f;
-        m_rotation.y += dx * sensitivity; 
-        m_rotation.x += dy * sensitivity; 
-
-        // Clamp Pitch (Prevent backflip)
-        m_rotation.x = std::max(-1.5f, std::min(1.5f, m_rotation.x));
-
-        // Reset Cursor to center of "last pos" to prevent hitting screen edge (Infinite Scroll)
-        SetCursorPos(m_lastMousePos.x, m_lastMousePos.y);
-
-        // 3. Handle Movement (WASD)
-        float speed = 5.0f * deltaTime;
-        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) speed *= 2.0f; 
-
-        XMVECTOR pos = XMLoadFloat3(&m_position);
-        XMVECTOR forward = XMVectorSet(0, 0, 1, 0);
-        XMVECTOR right = XMVectorSet(1, 0, 0, 0);
-        XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-
-        // Rotate movement vectors by Camera Yaw
-        XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_rotation.x, m_rotation.y, 0);
-        forward = XMVector3TransformCoord(forward, rotationMatrix);
-        right = XMVector3TransformCoord(right, rotationMatrix);
-
-        if (GetAsyncKeyState('W') & 0x8000) pos += forward * speed;
-        if (GetAsyncKeyState('S') & 0x8000) pos -= forward * speed;
-        if (GetAsyncKeyState('D') & 0x8000) pos += right * speed;
-        if (GetAsyncKeyState('A') & 0x8000) pos -= right * speed;
-        if (GetAsyncKeyState('E') & 0x8000) pos += up * speed;
-        if (GetAsyncKeyState('Q') & 0x8000) pos -= up * speed;
-
-        XMStoreFloat3(&m_position, pos);
-    } 
-    else {
-        // Stop flying
-        if (m_isFlying) {
-            m_isFlying = false;
-            ShowCursor(TRUE);
-        }
+    // THE PROPER FIX: Only enable camera look/movement if holding Right-Click (Button 1)
+    if (g_InputManager->IsMouseButtonPressed(1)) {
+        m_isDragging = true;
+        m_lastMouseX = g_InputManager->GetMouseX();
+        m_lastMouseY = g_InputManager->GetMouseY();
+    } else if (!g_InputManager->IsMouseButtonDown(1)) {
+        m_isDragging = false;
     }
 
-    // 4. Update View Matrix
-    XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_rotation.x, m_rotation.y, m_rotation.z);
+    if (m_isDragging) {
+        int mouseX = g_InputManager->GetMouseX();
+        int mouseY = g_InputManager->GetMouseY();
+
+        float deltaX = static_cast<float>(mouseX - m_lastMouseX);
+        float deltaY = static_cast<float>(mouseY - m_lastMouseY);
+
+        m_yaw += deltaX * m_turnSpeed;
+        m_pitch += deltaY * m_turnSpeed;
+
+        // Clamp pitch to prevent the camera from doing backward somersaults
+        m_pitch = std::clamp(m_pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
+
+        m_lastMouseX = mouseX;
+        m_lastMouseY = mouseY;
+    }
+
+    // Calculate new direction vectors
+    XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_pitch, m_yaw, 0.0f);
+    XMVECTOR forward = XMVector3TransformCoord(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotationMatrix);
+    XMVECTOR up = XMVector3TransformCoord(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), rotationMatrix);
+    XMVECTOR right = XMVector3Cross(up, forward);
+
+    XMStoreFloat3(&m_forward, forward);
+    XMStoreFloat3(&m_up, up);
+    XMStoreFloat3(&m_right, right);
+
     XMVECTOR pos = XMLoadFloat3(&m_position);
-    XMVECTOR target = XMVector3TransformCoord(XMVectorSet(0, 0, 1, 0), rotationMatrix);
-    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-
-    // LookAt(Position, Position + Forward, Up)
-    m_viewMatrix = XMMatrixLookAtLH(pos, pos + target, up);
+    
+    // Only allow WASD flying if we are actively holding right-click
+    if (m_isDragging) { 
+        if (GetAsyncKeyState('W') & 0x8000) pos += forward * m_moveSpeed * deltaTime;
+        if (GetAsyncKeyState('S') & 0x8000) pos -= forward * m_moveSpeed * deltaTime;
+        if (GetAsyncKeyState('A') & 0x8000) pos -= right * m_moveSpeed * deltaTime;
+        if (GetAsyncKeyState('D') & 0x8000) pos += right * m_moveSpeed * deltaTime;
+    }
+    
+    XMStoreFloat3(&m_position, pos);
+    m_viewMatrix = XMMatrixLookAtLH(pos, pos + forward, up);
 }
 
-DirectX::XMMATRIX Camera::GetViewMatrix() const {
-    return m_viewMatrix;
-}
-
-DirectX::XMMATRIX Camera::GetProjectionMatrix() const {
-    return m_projectionMatrix;
-}
+XMMATRIX Camera::GetViewMatrix() const { return m_viewMatrix; }
+XMMATRIX Camera::GetProjectionMatrix() const { return m_projMatrix; }

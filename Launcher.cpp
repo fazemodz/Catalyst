@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <regex>
 
 namespace fs = std::filesystem;
 
@@ -50,6 +51,45 @@ std::wstring BrowseForProjectFolder(HWND ownerWindow) {
     return folderPath;
 }
 
+std::wstring BrowseForAssetFile(HWND ownerWindow) {
+    OPENFILENAMEW ofn;
+    wchar_t szFile[260] = { 0 };
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = ownerWindow;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+    ofn.lpstrFilter = L"Supported Assets\0*.obj;*.fbx;*.png;*.jpg;*.wav;*.mp3\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+    if (GetOpenFileNameW(&ofn) == TRUE) {
+        return std::wstring(ofn.lpstrFile);
+    }
+    return L"";
+}
+
+void ImportAssetToProject(const std::wstring& sourcePath, const std::wstring& projectAssetsFolder, const std::wstring& newName) {
+    if (sourcePath.empty() || projectAssetsFolder.empty() || newName.empty()) return;
+    
+    fs::path src(sourcePath);
+    fs::path destFolder(projectAssetsFolder);
+    
+    if (!fs::exists(destFolder)) {
+        fs::create_directories(destFolder);
+    }
+    
+    fs::path destFile = destFolder / newName;
+    destFile.replace_extension(L".catalystactor");
+    
+    try {
+        fs::copy_file(src, destFile, fs::copy_options::overwrite_existing);
+    } catch (...) {
+        // Silently fail if file is locked or access denied
+    }
+}
+
 std::vector<std::wstring> GetRecentProjects() {
     std::vector<std::wstring> projects;
     std::wifstream file(L"recent_projects.txt");
@@ -60,6 +100,43 @@ std::vector<std::wstring> GetRecentProjects() {
         }
     }
     return projects;
+}
+
+ProjectInfo ParseProjectFile(const std::wstring& path) {
+    ProjectInfo info;
+    info.Path = path;
+    info.ProjectName = fs::path(path).stem().wstring(); 
+    info.EngineVersion = L"Unknown";
+
+    std::wifstream file(path);
+    if (!file.is_open()) return info;
+
+    std::wstring content((std::istreambuf_iterator<wchar_t>(file)), std::istreambuf_iterator<wchar_t>());
+    
+    std::wsmatch match;
+    std::wregex nameRegex(L"\"ProjectName\"\\s*:\\s*\"([^\"]+)\"");
+    if (std::regex_search(content, match, nameRegex) && match.size() > 1) {
+        info.ProjectName = match[1].str();
+    }
+
+    std::wregex versionRegex(L"\"EngineVersion\"\\s*:\\s*\"([^\"]+)\"");
+    if (std::regex_search(content, match, versionRegex) && match.size() > 1) {
+        info.EngineVersion = match[1].str();
+    }
+
+    return info;
+}
+
+std::vector<ProjectInfo> GetRecentProjectsInfo() {
+    auto paths = GetRecentProjects();
+    std::vector<ProjectInfo> infos;
+    infos.reserve(paths.size());
+    for (const auto& path : paths) {
+        if (fs::exists(path)) { 
+            infos.push_back(ParseProjectFile(path));
+        }
+    }
+    return infos;
 }
 
 void AddRecentProject(const std::wstring& path) {

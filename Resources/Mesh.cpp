@@ -172,3 +172,9 @@ void Mesh::GenerateMeshlets(const std::vector<Vertex>& vertices, const std::vect
 
 D3D12_VERTEX_BUFFER_VIEW Mesh::GetVertexView() const { return m_vbView; }
 D3D12_INDEX_BUFFER_VIEW Mesh::GetIndexView() const { return m_ibView; }
+void Mesh::Draw(ID3D12GraphicsCommandList* cmdList) {
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmdList->IASetVertexBuffers(0, 1, &m_vbView); 
+    cmdList->IASetIndexBuffer(&m_ibView);
+    cmdList->DrawIndexedInstanced(m_indexCount, 1, 0, 0, 0);
+}

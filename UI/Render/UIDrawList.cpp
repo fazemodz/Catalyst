@@ -1,5 +1,6 @@
 #include "UIDrawList.h"
 #include "FontManager.h"
+#include <cmath>
 
 void UIDrawList::Clear() {
     Vertices.clear();
@@ -37,6 +38,55 @@ void UIDrawList::AddRectFilled(float x, float y, float width, float height, uint
     Commands.back().ElementCount += 6;
 }
 
+// NEW: Generates vertices for a thick 2D line
+void UIDrawList::AddLine(float x1, float y1, float x2, float y2, float thickness, uint32_t color) {
+    PushTextureBatch(0);
+    
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    float len = sqrt(dx * dx + dy * dy);
+    if (len == 0.0f) return;
+    
+    float nx = (dy / len) * (thickness * 0.5f);
+    float ny = (-dx / len) * (thickness * 0.5f);
+
+    uint32_t vtxIdx = (uint32_t)Vertices.size();
+
+    Vertices.push_back({{x1 + nx, y1 + ny}, {0.0f, 0.0f}, color});
+    Vertices.push_back({{x2 + nx, y2 + ny}, {1.0f, 0.0f}, color});
+    Vertices.push_back({{x2 - nx, y2 - ny}, {1.0f, 1.0f}, color});
+    Vertices.push_back({{x1 - nx, y1 - ny}, {0.0f, 1.0f}, color});
+
+    Indices.push_back(vtxIdx);
+    Indices.push_back(vtxIdx + 1);
+    Indices.push_back(vtxIdx + 2);
+    Indices.push_back(vtxIdx);
+    Indices.push_back(vtxIdx + 2);
+    Indices.push_back(vtxIdx + 3);
+
+    Commands.back().ElementCount += 6;
+}
+
+void UIDrawList::AddImage(uint32_t textureID, float x, float y, float width, float height, uint32_t color) {
+    PushTextureBatch(textureID);
+
+    uint32_t vtxIdx = (uint32_t)Vertices.size();
+
+    Vertices.push_back({{x, y}, {0.0f, 0.0f}, color});
+    Vertices.push_back({{x + width, y}, {1.0f, 0.0f}, color});
+    Vertices.push_back({{x + width, y + height}, {1.0f, 1.0f}, color});
+    Vertices.push_back({{x, y + height}, {0.0f, 1.0f}, color});
+
+    Indices.push_back(vtxIdx);
+    Indices.push_back(vtxIdx + 1);
+    Indices.push_back(vtxIdx + 2);
+    Indices.push_back(vtxIdx);
+    Indices.push_back(vtxIdx + 2);
+    Indices.push_back(vtxIdx + 3);
+
+    Commands.back().ElementCount += 6;
+}
+
 void UIDrawList::AddText(FontManager& fontManager, const std::string& text, float x, float y, uint32_t color, float wrapWidth) {
     PushTextureBatch(fontManager.GetBindlessIndex());
 
@@ -53,7 +103,6 @@ void UIDrawList::AddText(FontManager& fontManager, const std::string& text, floa
         }
 
         GlyphInfo glyph = fontManager.GetGlyph(c);
-
     
         if (wrapWidth > 0.0f && (cursorX - startX + glyph.Advance) > wrapWidth) {
             cursorX = startX;

@@ -1,7 +1,4 @@
 #include "EngineApp.h"
-#include "imgui.h"
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 DXRenderer* g_Renderer = nullptr;
 InputManager* g_InputManager = nullptr;
@@ -10,12 +7,22 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"CatalystEngine", NULL };
     RegisterClassEx(&wc);
 
-    // Initial Window Title set to Catalyst Launcher
-    HWND hwnd = CreateWindow(wc.lpszClassName, L"Catalyst Launcher", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
+    // FIXED LAUNCHER STYLE: Prevent resizing/maximizing while in Launcher mode
+    DWORD launcherStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
+    // Center the Launcher on the user's screen
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int launchW = 1000;
+    int launchH = 650;
+
+    HWND hwnd = CreateWindow(wc.lpszClassName, L"Catalyst Launcher", launcherStyle, 
+                             (screenW - launchW) / 2, (screenH - launchH) / 2, 
+                             launchW, launchH, NULL, NULL, wc.hInstance, NULL);
 
     g_InputManager = new InputManager();
     g_Renderer = new DXRenderer();
-    g_Renderer->Initialize(hwnd, 1280, 800);
+    g_Renderer->Initialize(hwnd, launchW, launchH);
 
     ShowWindow(hwnd, nShowCmd);
     UpdateWindow(hwnd);
@@ -40,8 +47,6 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
 }
 
 LRESULT CALLBACK EngineApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return true;
-
     if (g_InputManager) {
         g_InputManager->ProcessMessage(msg, wParam, lParam);
     }

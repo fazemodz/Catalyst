@@ -22,7 +22,6 @@ cbuffer MaterialConstants : register(b1) {
     float2 padding2;
 };
 
-// The Magic Fix! Grabbing the exact ID from the Root Constant
 cbuffer InstanceData : register(b2) {
     uint globalInstanceID;
 };
@@ -39,8 +38,6 @@ struct ObjectData {
 };
 
 StructuredBuffer<ObjectData> ObjectBuffer : register(t0);
-
-// Bindless & Shadows
 Texture2D BindlessTextures[1024] : register(t0, space1);
 SamplerState LinearSampler : register(s0);
 Texture2D ShadowMap : register(t7);
@@ -64,11 +61,9 @@ struct PS_IN {
     uint instanceID : BLENDINDICES; 
 };
 
-// NOTICE: SV_InstanceID is completely removed!
 PS_IN VSMain(VS_IN input) {
     PS_IN output;
     
-    // Fetch the specific object using the hardware-injected ID
     ObjectData obj = ObjectBuffer[globalInstanceID];
     
     float4 worldPos = mul(float4(input.pos, 1.0f), obj.worldMatrix);
@@ -92,8 +87,6 @@ float ShadowCalculation(float4 worldPos) {
     float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
     projCoords.x =  projCoords.x * 0.5f + 0.5f;
     projCoords.y = -projCoords.y * 0.5f + 0.5f;
-
-    // If outside the shadow map frustum, return 1.0f (no shadow) instead of 0.0f (pitch black)
     if(projCoords.z > 1.0f) {
         return 1.0f; 
     }
