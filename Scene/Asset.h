@@ -15,15 +15,13 @@ struct Asset {
     AssetType type = AssetType::Mesh;
 
     Mesh* mesh = nullptr;
-    
-    // PBR Textures
+  
     Texture* albedoMap = nullptr;
     Texture* normalMap = nullptr;
     Texture* metallicMap = nullptr;
     Texture* roughnessMap = nullptr;
     Texture* aoMap = nullptr;
     
-    // HDR Skybox Texture
     Texture* hdrTexture = nullptr;
 
     float metallicFactor = 0.0f;

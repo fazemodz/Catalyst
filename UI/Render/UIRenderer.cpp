@@ -1,5 +1,7 @@
 #include "UIRenderer.h"
 #include <d3dcompiler.h>
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <windows.h>
 
@@ -153,7 +155,24 @@ void UIRenderer::Render(ID3D12GraphicsCommandList* cmdList, UIDrawList& drawList
     cmdList->IASetVertexBuffers(0, 1, &vbv);
     cmdList->IASetIndexBuffer(&ibv);
 
+    const D3D12_RECT fullScreenScissor = {
+        0,
+        0,
+        (std::max)(1L, static_cast<LONG>(std::ceil(screenWidth))),
+        (std::max)(1L, static_cast<LONG>(std::ceil(screenHeight)))
+    };
+
     for (const auto& cmd : drawList.Commands) {
+        D3D12_RECT scissorRect = fullScreenScissor;
+        if (cmd.ClipRect.Enabled) {
+            const LONG left = (std::clamp)(static_cast<LONG>(std::floor(cmd.ClipRect.X)), 0L, fullScreenScissor.right);
+            const LONG top = (std::clamp)(static_cast<LONG>(std::floor(cmd.ClipRect.Y)), 0L, fullScreenScissor.bottom);
+            const LONG right = (std::clamp)(static_cast<LONG>(std::ceil(cmd.ClipRect.X + cmd.ClipRect.Width)), left, fullScreenScissor.right);
+            const LONG bottom = (std::clamp)(static_cast<LONG>(std::ceil(cmd.ClipRect.Y + cmd.ClipRect.Height)), top, fullScreenScissor.bottom);
+            scissorRect = {left, top, right, bottom};
+        }
+        cmdList->RSSetScissorRects(1, &scissorRect);
+
         uint32_t texIdx = (uint32_t)cmd.TextureID;
         cmdList->SetGraphicsRoot32BitConstants(0, 1, &texIdx, 16);
         cmdList->DrawIndexedInstanced(cmd.ElementCount, 1, cmd.IndexOffset, 0, 0);

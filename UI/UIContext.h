@@ -10,6 +10,9 @@ class Camera;
 class UIContext {
 public:
     void Initialize(UIDrawList* drawList, FontManager* fontManager, InputManager* inputManager);
+    void SetModalRegion(float x, float y, float width, float height);
+    void ClearModalRegion();
+    bool IsModalActive() const { return m_modalRegionActive; }
     
     // THE FIX: Added bool& isHovered parameter
     bool TransformGizmo(DirectX::XMFLOAT3& position, Camera& camera, float viewX, float viewY, float viewW, float viewH, bool& isHovered);
@@ -33,6 +36,8 @@ public:
                      uint32_t clickColor = 0xFFAAAAAA);
 
 private:
+    bool IsInteractionAllowed(float x, float y, float width, float height) const;
+
     UIDrawList* m_drawList = nullptr;
     FontManager* m_fontManager = nullptr;
     InputManager* m_inputManager = nullptr;
@@ -41,4 +46,9 @@ private:
     int m_activeGizmoAxis = -1;
     DirectX::XMFLOAT2 m_lastGizmoMouse = {0,0};
     DirectX::XMFLOAT2 m_lastMousePos = {0,0};
+    bool m_modalRegionActive = false;
+    float m_modalRegionX = 0.0f;
+    float m_modalRegionY = 0.0f;
+    float m_modalRegionWidth = 0.0f;
+    float m_modalRegionHeight = 0.0f;
 };

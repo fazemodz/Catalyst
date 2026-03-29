@@ -9,6 +9,7 @@
 
 #include "PrimitiveGenerator.h"
 #include "../Launcher.h" 
+#include "../Blueprint/BlueprintEditor.h"
 
 struct BrowserItem {
     std::string name;
@@ -23,6 +24,8 @@ struct ActorViewerMeshLoadJob {
 struct EditorUIState {
     int selectedObj = -1;
     bool showPlaceActorsMenu = false;
+    int activeTopMenu = -1;
+    bool showHelpPopup = false;
     bool deleteWasDown = false;
     bool f2WasDown = false;
     std::wstring currentProjectFile = L"";
@@ -132,6 +135,7 @@ struct EditorUIState {
 
 class DXRenderer;
 class Material;
+struct GameObject;
 
 class EditorUI {
 public:
@@ -141,8 +145,16 @@ public:
     void DrawProjectLoading(DXRenderer* renderer, float w, float h);
     void DrawEditor(DXRenderer* renderer, float w, float h, float topH, float rightW, float bottomH);
     void ProcessDragAndDrop(DXRenderer* renderer, float w, float h, float topH, float viewW, float viewH);
+    bool IsBlueprintEditorOpen() const { return m_blueprintEditor.IsOpen(); }
+    bool HasUnsavedBlueprintChanges() const { return m_blueprintEditor.HasUnsavedChanges(); }
+    bool SaveBlueprintChanges() { return m_blueprintEditor.SaveOpenAsset(); }
+    std::wstring GetOpenBlueprintDisplayName() const { return m_blueprintEditor.GetDisplayName(); }
+    void OpenBlueprintEditorForObject(const GameObject* targetObject) { m_blueprintEditor.Open(targetObject); }
+    void OpenBlueprintAssetEditor(const std::wstring& assetPath) { m_blueprintEditor.OpenAsset(assetPath); }
+    void CloseBlueprintAssetEditor() { m_blueprintEditor.Close(); }
 
 private:
+    BlueprintEditor m_blueprintEditor;
     void DrawActorAssetViewer(DXRenderer* renderer, float w, float h);
     void DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h);
     void UpdatePreviewInteraction(float viewportTop, float viewportWidth, float viewportHeight,

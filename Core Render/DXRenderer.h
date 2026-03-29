@@ -38,6 +38,13 @@ class DXRenderer {
     friend class EditorUI;
 
 public:
+    enum class WindowCommand {
+        None,
+        CloseThisWindow,
+        CloseAllDiscard,
+        CloseAllSave
+    };
+
     void Initialize(HWND hwnd, int width, int height);
     void OnResize(int width, int height);
     void Render();
@@ -47,17 +54,52 @@ public:
     bool IsStandaloneActorViewerWindow() const { return m_standaloneActorViewerWindow; }
     void SetStandaloneMaterialEditorWindow(bool isStandalone) { m_standaloneMaterialEditorWindow = isStandalone; }
     bool IsStandaloneMaterialEditorWindow() const { return m_standaloneMaterialEditorWindow; }
+    void SetStandaloneBlueprintEditorWindow(bool isStandalone) { m_standaloneBlueprintEditorWindow = isStandalone; }
+    bool IsStandaloneBlueprintEditorWindow() const { return m_standaloneBlueprintEditorWindow; }
     bool OpenActorAssetViewer(const std::wstring& path);
     bool OpenMaterialAssetEditor(const std::wstring& path);
+    bool OpenBlueprintAssetEditor(const std::wstring& path);
     bool SaveCurrentScene();
+    bool HasPendingUnsavedChanges() const;
+    std::wstring GetUnsavedChangesDescription() const;
+    void OpenClosePrompt(bool closeAllWindows, const std::wstring& summaryOverride = L"");
+    bool IsClosePromptOpen() const;
+    void SetClosePromptError(const std::wstring& errorMessage);
+    bool SavePendingUnsavedChanges();
+    WindowCommand ConsumePendingWindowCommand();
     int GetNextAvailableAssetId() const;
     
     std::vector<ProjectInfo> GetRecentProjectsInfo();
 
 private:
+    struct RuntimeWidgetLink {
+        int fromNodeId = 0;
+        int toNodeId = 0;
+        std::string fromPinKind;
+        std::string toPinKind;
+    };
+
+    struct RuntimeWidgetNode {
+        int id = 0;
+        std::string nodeTypeId;
+        std::string displayText;
+        float canvasX = 0.0f;
+        float canvasY = 0.0f;
+        float canvasWidth = 0.0f;
+        float canvasHeight = 0.0f;
+        DirectX::XMFLOAT4 tint = {1.0f, 1.0f, 1.0f, 1.0f};
+    };
+
+    struct RuntimeWidgetInstance {
+        std::wstring assetPath;
+        std::vector<RuntimeWidgetNode> nodes;
+        std::vector<RuntimeWidgetLink> links;
+    };
+
     bool FinalizeActorAssetViewerLoad(const MeshData& meshData, const std::wstring& path);
     void CloseActorAssetViewer();
     void CloseMaterialAssetEditor();
+    void CloseBlueprintAssetEditor();
     void ResetSceneToDefaults();
     void QueueProjectStartupSceneLoad(const std::wstring& projectFilePath);
     void ProcessPendingProjectSceneLoad();
@@ -65,10 +107,28 @@ private:
     bool LoadStartupSceneForProject(const std::wstring& projectFilePath);
     bool LoadSceneFromMap(const std::wstring& scenePath, const std::wstring& projectRoot);
     bool OpenSceneMap(const std::wstring& scenePath);
+    bool HasUnsavedSceneChanges() const;
+    bool HasUnsavedMaterialEditorChanges() const;
+    bool SaveMaterialAssetEditor();
+    bool SavePendingOpenDocuments();
     std::wstring ResolveActiveProjectFilePath() const;
     std::wstring ResolveActiveProjectDisplayName() const;
     std::wstring ResolveActiveMapDisplayName() const;
+    std::wstring DescribeUnsavedChanges() const;
     void RefreshWindowTitle();
+    void RefreshSceneSavedDocument();
+    void RefreshMaterialEditorSavedDocument();
+    void ClearClosePrompt();
+    void DrawClosePrompt(float width, float height);
+    void RefreshObjectBlueprintRuntime(GameObject& object);
+    void RefreshSceneBlueprintRuntime();
+    void SetPlayerMouseLookLocked(bool locked, float viewportTop = 0.0f, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
+    void ApplyBlueprintGameplayNodes(float deltaTime, float viewportTop, float viewportWidth, float viewportHeight, bool mouseInViewport);
+    void DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportTop, float viewportWidth, float viewportHeight);
+    bool LoadRuntimeWidgetInstance(const std::wstring& assetPath, RuntimeWidgetInstance& outInstance);
+    RuntimeWidgetNode* FindRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId);
+    const RuntimeWidgetNode* FindRuntimeWidgetNode(const RuntimeWidgetInstance& instance, int nodeId) const;
+    void ExecuteRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId);
     Asset* FindAssetById(int assetId) const;
     Asset* FindAssetBySourcePath(const std::wstring& sourcePath) const;
     Material* FindMaterialByPath(const std::wstring& materialPath) const;
@@ -83,6 +143,9 @@ private:
     Texture* LoadTextureAsset(const std::wstring& path);
     Material* LoadMaterialAsset(const std::wstring& path);
     void SyncMaterialTextures(Material& material);
+    std::string BuildCurrentSceneDocument() const;
+    std::string BuildSceneDocument(const std::vector<GameObject>& objectsToSave, const std::wstring& projectRoot) const;
+    std::string BuildMaterialDocument(const Material& material) const;
     bool BuildViewportRay(int mouseX, int mouseY, float topH, float viewW, float viewH,
                           DirectX::XMFLOAT3& rayOrigin, DirectX::XMFLOAT3& rayDirection) const;
     int RaycastViewportObject(int mouseX, int mouseY, float topH, float viewW, float viewH) const;
@@ -96,6 +159,7 @@ private:
     EngineState m_engineState = EngineState::Launcher;
     bool m_standaloneActorViewerWindow = false;
     bool m_standaloneMaterialEditorWindow = false;
+    bool m_standaloneBlueprintEditorWindow = false;
 
     Microsoft::WRL::ComPtr<ID3D12Device> m_device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_commandQueue;
@@ -121,7 +185,7 @@ private:
     FontManager m_fontManager;
     UIContext m_uiContext;
     
-    // THE FIX: Changed from ImDrawList to your custom UIDrawList wrapper
+    
     UIDrawList m_uiDrawList; 
     
     EditorUI m_editorUI;
@@ -154,7 +218,21 @@ private:
     bool m_projectLoadingOverlayPresented = false;
     std::wstring m_pendingProjectFilePath;
     std::wstring m_lastWindowTitle;
+    std::string m_savedSceneDocument;
+    std::string m_savedMaterialDocument;
     bool m_lastPlayMode = false;
+    bool m_jumpKeyWasDown = false;
+    bool m_escapeKeyWasDown = false;
+    bool m_playerMouseLookLocked = false;
+    bool m_playerMouseLookSuppressed = false;
+    float m_playerControllerYaw = 0.0f;
+    float m_playerControllerPitch = 0.0f;
+    std::map<std::string, RuntimeWidgetInstance> m_runtimeWidgetInstances;
+    bool m_showClosePrompt = false;
+    bool m_closePromptCloseAllWindows = false;
+    std::wstring m_closePromptSummary;
+    std::wstring m_closePromptError;
+    WindowCommand m_pendingWindowCommand = WindowCommand::None;
     
     uint32_t m_frameHeapOffset = 0;
     PhysicsSystem m_physicsSystem;

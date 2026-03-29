@@ -14,8 +14,11 @@ std::wstring BrowseForProjectFile(HWND ownerWindow);
 std::wstring BrowseForProjectFolder(HWND ownerWindow);
 
 std::wstring BrowseForAssetFile(HWND ownerWindow);
+std::wstring BrowseForActorAssetFile(HWND ownerWindow);
 std::wstring BrowseForTextureFile(HWND ownerWindow);
 std::wstring BrowseForMaterialFile(HWND ownerWindow);
+std::wstring BrowseForBlueprintFile(HWND ownerWindow);
+std::wstring BrowseForUIBlueprintFile(HWND ownerWindow);
 
 bool ImportAssetToProject(const std::wstring& sourcePath, const std::wstring& projectAssetsFolder, const std::wstring& newName, std::wstring* importedPath = nullptr);
 

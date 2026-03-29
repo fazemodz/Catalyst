@@ -123,6 +123,25 @@ std::wstring BrowseForAssetFile(HWND ownerWindow) {
     return L"";
 }
 
+std::wstring BrowseForActorAssetFile(HWND ownerWindow) {
+    OPENFILENAMEW ofn;
+    wchar_t szFile[260] = { 0 };
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = ownerWindow;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+    ofn.lpstrFilter = L"Catalyst Actor Assets (*.catalystactor)\0*.catalystactor\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+    if (GetOpenFileNameW(&ofn) == TRUE) {
+        return std::wstring(ofn.lpstrFile);
+    }
+    return L"";
+}
+
 std::wstring BrowseForTextureFile(HWND ownerWindow) {
     OPENFILENAMEW ofn;
     wchar_t szFile[260] = { 0 };
@@ -152,6 +171,44 @@ std::wstring BrowseForMaterialFile(HWND ownerWindow) {
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Materials (*.catalystmat)\0*.catalystmat\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+    if (GetOpenFileNameW(&ofn) == TRUE) {
+        return std::wstring(ofn.lpstrFile);
+    }
+    return L"";
+}
+
+std::wstring BrowseForBlueprintFile(HWND ownerWindow) {
+    OPENFILENAMEW ofn;
+    wchar_t szFile[260] = { 0 };
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = ownerWindow;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+    ofn.lpstrFilter = L"Catalyst Blueprints (*.catalystblueprint)\0*.catalystblueprint\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+    if (GetOpenFileNameW(&ofn) == TRUE) {
+        return std::wstring(ofn.lpstrFile);
+    }
+    return L"";
+}
+
+std::wstring BrowseForUIBlueprintFile(HWND ownerWindow) {
+    OPENFILENAMEW ofn;
+    wchar_t szFile[260] = { 0 };
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = ownerWindow;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+    ofn.lpstrFilter = L"Catalyst UI Blueprints (*.catalystuiblueprint)\0*.catalystuiblueprint\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 

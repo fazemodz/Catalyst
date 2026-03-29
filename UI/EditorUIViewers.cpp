@@ -66,10 +66,7 @@ void EditorUI::DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Materia
 
     std::wstring projectRoot = !State.currentProjectFolder.empty() ? State.currentProjectFolder : FindProjectRootFromAssetPath(materialPath);
     auto SaveMaterialState = [&]() {
-        material->SaveToFile(materialPath);
-        renderer->SyncMaterialTextures(*material);
-        std::error_code ec;
-        material->lastWriteTime = fs::last_write_time(materialPath, ec);
+        renderer->SaveMaterialAssetEditor();
     };
 
     auto AssignTextureSlot = [&](const char* label, std::string& linkedPath) {
@@ -102,6 +99,7 @@ void EditorUI::DrawActorAssetViewer(DXRenderer* renderer, float w, float h) {
     auto& uiCtx = renderer->m_uiContext;
     auto& fontMgr = renderer->m_fontManager;
     HWND hwnd = renderer->m_hwnd;
+    const bool closePromptOpen = renderer->IsClosePromptOpen();
 
     const float menuBarH = 28.0f;
     const float tabBarH = 36.0f;
@@ -111,11 +109,13 @@ void EditorUI::DrawActorAssetViewer(DXRenderer* renderer, float w, float h) {
     const float socketPanelH = 220.0f;
     const float viewportW = (std::max)(1.0f, w - rightPanelW);
 
-    UpdatePreviewInteraction(viewerTop, viewportW, h,
-                             State.actorViewerYaw, State.actorViewerPitch, State.actorViewerDistance,
-                             State.actorViewerAutoRotate, State.actorViewerIsDragging,
-                             State.actorViewerLastMouseX, State.actorViewerLastMouseY,
-                             State.actorViewerViewportW, State.actorViewerViewportH);
+    if (!closePromptOpen) {
+        UpdatePreviewInteraction(viewerTop, viewportW, h,
+                                 State.actorViewerYaw, State.actorViewerPitch, State.actorViewerDistance,
+                                 State.actorViewerAutoRotate, State.actorViewerIsDragging,
+                                 State.actorViewerLastMouseX, State.actorViewerLastMouseY,
+                                 State.actorViewerViewportW, State.actorViewerViewportH);
+    }
 
     if (State.isActorViewerLoading) {
         drawList.AddRectFilled(0, 0, w, h, 0xFF141414);
@@ -296,6 +296,7 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
     auto& uiCtx = renderer->m_uiContext;
     auto& fontMgr = renderer->m_fontManager;
     HWND hwnd = renderer->m_hwnd;
+    const bool closePromptOpen = renderer->IsClosePromptOpen();
 
     const float menuBarH = 28.0f;
     const float tabBarH = 36.0f;
@@ -304,11 +305,13 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
     const float rightPanelW = 380.0f;
     const float viewportW = (std::max)(1.0f, w - rightPanelW);
 
-    UpdatePreviewInteraction(editorTop, viewportW, h,
-                             State.materialEditorYaw, State.materialEditorPitch, State.materialEditorDistance,
-                             State.materialEditorAutoRotate, State.materialEditorIsDragging,
-                             State.materialEditorLastMouseX, State.materialEditorLastMouseY,
-                             State.materialEditorViewportW, State.materialEditorViewportH);
+    if (!closePromptOpen) {
+        UpdatePreviewInteraction(editorTop, viewportW, h,
+                                 State.materialEditorYaw, State.materialEditorPitch, State.materialEditorDistance,
+                                 State.materialEditorAutoRotate, State.materialEditorIsDragging,
+                                 State.materialEditorLastMouseX, State.materialEditorLastMouseY,
+                                 State.materialEditorViewportW, State.materialEditorViewportH);
+    }
 
     Material* material = renderer->m_materialEditorMaterial;
     if (!material) {
@@ -359,14 +362,12 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
     }
 
     if (uiCtx.Button("Save", 16.0f, menuBarH + tabBarH + 4.0f, 74.0f, 26.0f, 0xFF2A2A2A, 0xFF3B3B3B, 0xFF1E1E1E)) {
-        material->SaveToFile(State.materialEditorPath);
-        renderer->SyncMaterialTextures(*material);
-        std::error_code ec;
-        material->lastWriteTime = fs::last_write_time(State.materialEditorPath, ec);
+        renderer->SaveMaterialAssetEditor();
     }
     if (uiCtx.Button("Reload", 98.0f, menuBarH + tabBarH + 4.0f, 86.0f, 26.0f, 0xFF2A2A2A, 0xFF3B3B3B, 0xFF1E1E1E)) {
         material->LoadFromFile(State.materialEditorPath);
         renderer->SyncMaterialTextures(*material);
+        renderer->RefreshMaterialEditorSavedDocument();
     }
     if (uiCtx.Button("Sphere", 204.0f, menuBarH + tabBarH + 4.0f, 72.0f, 26.0f,
                      State.materialEditorPreviewMesh == 0 ? 0xFF5B431A : 0xFF2A2A2A,

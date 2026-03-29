@@ -73,7 +73,7 @@ void EditorUI::ProcessDragAndDrop(DXRenderer* renderer, float w, float h, float 
         }
     }
 
-    // Do not process drops if we are actively running a thread!
+   
     if (State.draggedAssetIndex != -1 && State.draggedAssetIndex < static_cast<int>(State.discoveredAssets.size()) && !State.isAsyncLoading) {
         if (g_InputManager->IsMouseButtonDown(0)) {
             float ghostX = static_cast<float>(State.mx) - 45.0f;
@@ -178,19 +178,48 @@ void EditorUI::ProcessDragAndDrop(DXRenderer* renderer, float w, float h, float 
                     return;
                 }
 
+                if (IsBlueprintAssetName(aName)) {
+                    GameObject newObj;
+                    newObj.name = fs::path(aName).stem().string() + "_" + std::to_string(gameObjects.size());
+                    newObj.position = {spawnX, spawnY, spawnZ};
+                    newObj.scale = {1.0f, 1.0f, 1.0f};
+                    newObj.color = {0.8f, 0.8f, 0.8f, 1.0f};
+                    newObj.asset = nullptr;
+                    newObj.blueprintAssetPath = fs::path(fullPath).lexically_normal().wstring();
+                    PhysicsSystem::InitializeDefaultCollider(newObj, false, true);
+                    renderer->RefreshObjectBlueprintRuntime(newObj);
+                    gameObjects.push_back(newObj);
+
+                    State.selectedObj = static_cast<int>(gameObjects.size()) - 1;
+                    State.selectedContentAsset = -1;
+                    SetEditorStatus("Placed Blueprint " + fs::path(aName).stem().string(), 0xFF89D185);
+                    State.draggedAssetIndex = -1;
+                    State.pendingDragAssetIndex = -1;
+                    State.pendingDragWasSelected = false;
+                    return;
+                }
+
+                if (IsUIBlueprintAssetName(aName)) {
+                    SetEditorStatus("UI Blueprint placement is not supported yet", 0xFFE0C36F);
+                    State.draggedAssetIndex = -1;
+                    State.pendingDragAssetIndex = -1;
+                    State.pendingDragWasSelected = false;
+                    return;
+                }
+
                 int mappedId = -1; 
                 for (size_t i = 0; i < assets.size(); i++) {
                     if (assets[i]->name == aName) { mappedId = static_cast<int>(i); break; }
                 }
 
-                // --- THE FIX: DISPATCH THE PARSER TO A BACKGROUND WORKER THREAD ---
+               
                 if (mappedId == -1) {
                     State.isAsyncLoading = true;
                     State.pendingAssetName = aName;
                     State.pendingAssetSourcePath = fullPath;
                     State.pendingSpawnPos = {spawnX, spawnY, spawnZ};
                     
-                    // Push the parsing load entirely off the main rendering thread!
+                    
                     State.asyncMeshFuture = std::async(std::launch::async, ParseCatalystActor, fullPath);
                 } else {
                     GameObject newObj;

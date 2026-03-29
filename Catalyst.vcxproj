@@ -128,6 +128,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Blueprint\BlueprintEditor.h" />
+    <ClInclude Include="Blueprint\Nodes\BlueprintNodeLibrary.h" />
     <ClInclude Include="Core Render\BindlessManager.h" />
     <ClInclude Include="Core Render\DXRenderer.h" />
     <ClInclude Include="Core Render\Passes\AssetPreviewPass.h" />
@@ -162,6 +164,8 @@
     <ClInclude Include="Window Creation\Window.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Blueprint\BlueprintEditor.cpp" />
+    <ClCompile Include="Blueprint\Nodes\BlueprintNodeLibrary.cpp" />
     <ClCompile Include="Core Render\BindlessManager.cpp" />
     <ClCompile Include="Core Render\Passes\AssetPreviewPass.cpp">
       <RuntimeLibrary>MultiThreadedDebugDll</RuntimeLibrary>
@@ -758,6 +762,8 @@
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Assets\" />
+    <Folder Include="Blueprint\" />
+    <Folder Include="Blueprint\Nodes\" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\QuantaCull.hlsl">

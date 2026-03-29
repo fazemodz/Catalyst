@@ -17,6 +17,31 @@ constexpr int kViewerClientHeight = 900;
 std::wstring BuildActorViewerTitle(const std::wstring& assetPath) {
     return L"Catalyst Asset Viewer - " + fs::path(assetPath).stem().wstring();
 }
+
+std::wstring BuildBlueprintEditorTitle(const std::wstring& assetPath) {
+    return L"Catalyst Blueprint Editor - " + fs::path(assetPath).stem().wstring();
+}
+
+std::wstring JoinHumanList(const std::vector<std::wstring>& items) {
+    if (items.empty()) {
+        return L"";
+    }
+    if (items.size() == 1) {
+        return items.front();
+    }
+    if (items.size() == 2) {
+        return items[0] + L" and " + items[1];
+    }
+
+    std::wstring joined;
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (index > 0) {
+            joined += (index + 1 == items.size()) ? L", and " : L", ";
+        }
+        joined += items[index];
+    }
+    return joined;
+}
 }
 
 EngineApp* EngineApp::Get() {
@@ -31,6 +56,11 @@ bool OpenActorViewerWindow(const std::wstring& assetPath) {
 bool OpenMaterialEditorWindow(const std::wstring& assetPath) {
     EngineApp* app = EngineApp::Get();
     return app ? app->OpenMaterialEditorWindow(assetPath) : false;
+}
+
+bool OpenBlueprintEditorWindow(const std::wstring& assetPath) {
+    EngineApp* app = EngineApp::Get();
+    return app ? app->OpenBlueprintEditorWindow(assetPath) : false;
 }
 
 EngineApp::WindowContext* EngineApp::CreateWindowContext(const std::wstring& title, DWORD style, int clientWidth, int clientHeight, int x, int y) {
@@ -77,6 +107,86 @@ EngineApp::WindowContext* EngineApp::FindWindowContext(HWND hwnd) {
             return window->hwnd == hwnd;
         });
     return it != m_windows.end() ? it->get() : nullptr;
+}
+
+std::wstring EngineApp::DescribeUnsavedChangesAcrossWindows() const {
+    std::vector<std::wstring> summaries;
+    summaries.reserve(m_windows.size());
+    for (const std::unique_ptr<WindowContext>& window : m_windows) {
+        if (window == nullptr || window->renderer == nullptr || !window->renderer->HasPendingUnsavedChanges()) {
+            continue;
+        }
+
+        const std::wstring summary = window->renderer->GetUnsavedChangesDescription();
+        if (!summary.empty()) {
+            summaries.push_back(summary);
+        }
+    }
+
+    return JoinHumanList(summaries);
+}
+
+void EngineApp::QueueCloseAllPrompt(WindowContext* primaryWindow) {
+    if (primaryWindow == nullptr || primaryWindow->renderer == nullptr) {
+        CloseAllWindows();
+        return;
+    }
+
+    const std::wstring summary = DescribeUnsavedChangesAcrossWindows();
+    if (summary.empty()) {
+        CloseAllWindows();
+        return;
+    }
+
+    ShowWindow(primaryWindow->hwnd, SW_RESTORE);
+    SetForegroundWindow(primaryWindow->hwnd);
+    primaryWindow->renderer->OpenClosePrompt(true, summary);
+}
+
+bool EngineApp::ResolveCloseAllWindowCommand(bool saveChanges) {
+    if (saveChanges) {
+        for (const std::unique_ptr<WindowContext>& window : m_windows) {
+            if (window == nullptr || window->renderer == nullptr) {
+                continue;
+            }
+
+            if (!window->renderer->SavePendingUnsavedChanges()) {
+                for (const std::unique_ptr<WindowContext>& candidate : m_windows) {
+                    if (candidate && candidate->isPrimaryWindow && candidate->renderer) {
+                        candidate->renderer->SetClosePromptError(L"One or more files could not be saved. Fix that first, or discard the changes.");
+                        break;
+                    }
+                }
+                return false;
+            }
+        }
+    }
+
+    CloseAllWindows();
+    return true;
+}
+
+void EngineApp::CloseAllWindows() {
+    if (m_isClosingAllWindows) {
+        return;
+    }
+
+    m_isClosingAllWindows = true;
+    std::vector<HWND> windowHandles;
+    windowHandles.reserve(m_windows.size());
+    for (const std::unique_ptr<WindowContext>& window : m_windows) {
+        if (window && window->hwnd != nullptr) {
+            windowHandles.push_back(window->hwnd);
+        }
+    }
+
+    for (HWND windowHandle : windowHandles) {
+        if (IsWindow(windowHandle)) {
+            DestroyWindow(windowHandle);
+        }
+    }
+
+    m_isClosingAllWindows = false;
 }
 
 void EngineApp::DestroyWindowContext(HWND hwnd) {
@@ -172,6 +282,39 @@ bool EngineApp::OpenMaterialEditorWindow(const std::wstring& assetPath) {
     return true;
 }
 
+bool EngineApp::OpenBlueprintEditorWindow(const std::wstring& assetPath) {
+    if (assetPath.empty()) {
+        return false;
+    }
+
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    const int posX = (screenW - kViewerClientWidth) / 2;
+    const int posY = (screenH - kViewerClientHeight) / 2;
+
+    WindowContext* blueprintWindow = CreateWindowContext(
+        BuildBlueprintEditorTitle(assetPath),
+        WS_OVERLAPPEDWINDOW,
+        kViewerClientWidth,
+        kViewerClientHeight,
+        posX,
+        posY);
+    if (!blueprintWindow) {
+        return false;
+    }
+
+    blueprintWindow->renderer->SetEngineState(EngineState::Editor);
+    blueprintWindow->renderer->SetStandaloneBlueprintEditorWindow(true);
+    if (!blueprintWindow->renderer->OpenBlueprintAssetEditor(assetPath)) {
+        DestroyWindow(blueprintWindow->hwnd);
+        return false;
+    }
+
+    ShowWindow(blueprintWindow->hwnd, SW_SHOW);
+    UpdateWindow(blueprintWindow->hwnd);
+    return true;
+}
+
 void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
     s_instance = this;
     m_hInstance = hInstance;
@@ -179,10 +322,10 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, kWindowClassName, NULL };
     RegisterClassEx(&wc);
 
-    // FIXED LAUNCHER STYLE: Prevent resizing/maximizing while in Launcher mode
+   
     DWORD launcherStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
-    // Center the Launcher on the user's screen
+   
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
     int launchW = 1000;
@@ -200,6 +343,7 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
         s_instance = nullptr;
         return;
     }
+    mainWindow->isPrimaryWindow = true;
 
     ShowWindow(mainWindow->hwnd, nShowCmd);
     UpdateWindow(mainWindow->hwnd);
@@ -237,8 +381,21 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
                 g_InputManager = window->inputManager.get();
                 g_Renderer = window->renderer.get();
                 window->renderer->Render();
+                const DXRenderer::WindowCommand windowCommand = window->renderer->ConsumePendingWindowCommand();
                 window->inputManager->EndFrame();
                 renderedAnyWindow = true;
+
+                if (windowCommand == DXRenderer::WindowCommand::CloseThisWindow) {
+                    if (IsWindow(window->hwnd)) {
+                        DestroyWindow(window->hwnd);
+                    }
+                } else if (windowCommand == DXRenderer::WindowCommand::CloseAllDiscard) {
+                    ResolveCloseAllWindowCommand(false);
+                    break;
+                } else if (windowCommand == DXRenderer::WindowCommand::CloseAllSave) {
+                    ResolveCloseAllWindowCommand(true);
+                    break;
+                }
             }
 
             if (!renderedAnyWindow) {
@@ -287,7 +444,23 @@ LRESULT CALLBACK EngineApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         return 0;
     case WM_CLOSE:
-        DestroyWindow(hwnd);
+        if (app != nullptr && window != nullptr && window->isPrimaryWindow) {
+            if (app->m_isClosingAllWindows) {
+                app->CloseAllWindows();
+            } else {
+                app->QueueCloseAllPrompt(window);
+            }
+            return 0;
+        }
+        if (app == nullptr || app->m_isClosingAllWindows || window == nullptr || window->renderer == nullptr) {
+            DestroyWindow(hwnd);
+        } else if (!window->renderer->HasPendingUnsavedChanges()) {
+            DestroyWindow(hwnd);
+        } else {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+            window->renderer->OpenClosePrompt(false);
+        }
         return 0;
     case WM_DESTROY:
         if (app) {

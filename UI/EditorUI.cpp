@@ -54,6 +54,14 @@ bool IsMapAssetName(const std::string& filename) {
     return HasExtension(filename, L".catalystmap");
 }
 
+bool IsBlueprintAssetName(const std::string& filename) {
+    return HasExtension(filename, L".catalystblueprint");
+}
+
+bool IsUIBlueprintAssetName(const std::string& filename) {
+    return HasExtension(filename, L".catalystuiblueprint");
+}
+
 bool WriteEmptySceneMapFile(const fs::path& outputPath) {
     if (outputPath.empty()) {
         return false;
@@ -83,6 +91,78 @@ bool WriteEmptySceneMapFile(const fs::path& outputPath) {
     }
 }
 
+bool WriteEmptyBlueprintFile(const fs::path& outputPath) {
+    if (outputPath.empty()) {
+        return false;
+    }
+
+    try {
+        std::error_code ec;
+        const fs::path parentFolder = outputPath.parent_path();
+        if (!parentFolder.empty()) {
+            fs::create_directories(parentFolder, ec);
+        }
+
+        std::ofstream outFile(outputPath, std::ios::binary | std::ios::trunc);
+        if (!outFile.is_open()) {
+            return false;
+        }
+
+        outFile << "{\n";
+        outFile << "  \"type\": \"CatalystBlueprint\",\n";
+        outFile << "  \"version\": 1,\n";
+        outFile << "  \"parent\": \"Actor\",\n";
+        outFile << "  \"seedDefaultGraph\": true,\n";
+        outFile << "  \"nodes\": [],\n";
+        outFile << "  \"links\": []\n";
+        outFile << "}\n";
+        outFile.close();
+        return fs::exists(outputPath);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool WriteEmptyUIBlueprintFile(const fs::path& outputPath) {
+    if (outputPath.empty()) {
+        return false;
+    }
+
+    try {
+        std::error_code ec;
+        const fs::path parentFolder = outputPath.parent_path();
+        if (!parentFolder.empty()) {
+            fs::create_directories(parentFolder, ec);
+        }
+
+        std::ofstream outFile(outputPath, std::ios::binary | std::ios::trunc);
+        if (!outFile.is_open()) {
+            return false;
+        }
+
+        outFile << "{\n";
+        outFile << "  \"type\": \"CatalystUIBlueprint\",\n";
+        outFile << "  \"version\": 1,\n";
+        outFile << "  \"parent\": \"UserWidget\",\n";
+        outFile << "  \"designer\": {\n";
+        outFile << "    \"root\": {\n";
+        outFile << "      \"type\": \"CanvasPanel\",\n";
+        outFile << "      \"name\": \"RootCanvas\",\n";
+        outFile << "      \"children\": []\n";
+        outFile << "    }\n";
+        outFile << "  },\n";
+        outFile << "  \"graph\": {\n";
+        outFile << "    \"nodes\": [],\n";
+        outFile << "    \"links\": []\n";
+        outFile << "  }\n";
+        outFile << "}\n";
+        outFile.close();
+        return fs::exists(outputPath);
+    } catch (...) {
+        return false;
+    }
+}
+
 bool CreateEmptySceneMap(const std::wstring& targetDirectory, std::wstring* createdPath) {
     if (targetDirectory.empty()) {
         return false;
@@ -102,6 +182,68 @@ bool CreateEmptySceneMap(const std::wstring& targetDirectory, std::wstring* crea
 
         const fs::path outputPath = targetFolder / finalName;
         if (!WriteEmptySceneMapFile(outputPath)) {
+            return false;
+        }
+
+        if (createdPath) {
+            *createdPath = outputPath.wstring();
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CreateEmptyBlueprintAsset(const std::wstring& targetDirectory, std::wstring* createdPath) {
+    if (targetDirectory.empty()) {
+        return false;
+    }
+
+    try {
+        const fs::path targetFolder(targetDirectory);
+        if (!fs::exists(targetFolder) || !fs::is_directory(targetFolder)) {
+            return false;
+        }
+
+        std::wstring finalName = L"NewBlueprint.catalystblueprint";
+        int counter = 1;
+        while (fs::exists(targetFolder / finalName)) {
+            finalName = L"NewBlueprint_" + std::to_wstring(counter++) + L".catalystblueprint";
+        }
+
+        const fs::path outputPath = targetFolder / finalName;
+        if (!WriteEmptyBlueprintFile(outputPath)) {
+            return false;
+        }
+
+        if (createdPath) {
+            *createdPath = outputPath.wstring();
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CreateEmptyUIBlueprintAsset(const std::wstring& targetDirectory, std::wstring* createdPath) {
+    if (targetDirectory.empty()) {
+        return false;
+    }
+
+    try {
+        const fs::path targetFolder(targetDirectory);
+        if (!fs::exists(targetFolder) || !fs::is_directory(targetFolder)) {
+            return false;
+        }
+
+        std::wstring finalName = L"NewUIBlueprint.catalystuiblueprint";
+        int counter = 1;
+        while (fs::exists(targetFolder / finalName)) {
+            finalName = L"NewUIBlueprint_" + std::to_wstring(counter++) + L".catalystuiblueprint";
+        }
+
+        const fs::path outputPath = targetFolder / finalName;
+        if (!WriteEmptyUIBlueprintFile(outputPath)) {
             return false;
         }
 

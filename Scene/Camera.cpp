@@ -2,7 +2,6 @@
 #include <windows.h>
 #include <algorithm>
 
-// Hook into our custom Input Manager!
 extern InputManager* g_InputManager;
 
 using namespace DirectX;
@@ -58,14 +57,13 @@ void Camera::Update(float deltaTime, bool allowInteraction) {
         m_yaw += deltaX * m_turnSpeed;
         m_pitch += deltaY * m_turnSpeed;
 
-        // Clamp pitch to prevent the camera from doing backward somersaults
+        
         m_pitch = std::clamp(m_pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
 
         m_lastMouseX = mouseX;
         m_lastMouseY = mouseY;
     }
 
-    // Calculate new direction vectors
     XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(m_pitch, m_yaw, 0.0f);
     XMVECTOR forward = XMVector3TransformCoord(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotationMatrix);
     XMVECTOR up = XMVector3TransformCoord(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), rotationMatrix);
@@ -77,7 +75,7 @@ void Camera::Update(float deltaTime, bool allowInteraction) {
 
     XMVECTOR pos = XMLoadFloat3(&m_position);
     
-    // Only allow WASD flying if we are actively holding right-click
+
     if (m_isDragging) { 
         if (GetAsyncKeyState('W') & 0x8000) pos += forward * m_moveSpeed * deltaTime;
         if (GetAsyncKeyState('S') & 0x8000) pos -= forward * m_moveSpeed * deltaTime;

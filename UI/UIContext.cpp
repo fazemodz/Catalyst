@@ -10,11 +10,39 @@ void UIContext::Initialize(UIDrawList* drawList, FontManager* fontManager, Input
     m_inputManager = inputManager;
 }
 
+void UIContext::SetModalRegion(float x, float y, float width, float height) {
+    m_modalRegionActive = true;
+    m_modalRegionX = x;
+    m_modalRegionY = y;
+    m_modalRegionWidth = width;
+    m_modalRegionHeight = height;
+}
+
+void UIContext::ClearModalRegion() {
+    m_modalRegionActive = false;
+    m_modalRegionX = 0.0f;
+    m_modalRegionY = 0.0f;
+    m_modalRegionWidth = 0.0f;
+    m_modalRegionHeight = 0.0f;
+}
+
+bool UIContext::IsInteractionAllowed(float x, float y, float width, float height) const {
+    if (!m_modalRegionActive) {
+        return true;
+    }
+
+    return x >= m_modalRegionX &&
+           y >= m_modalRegionY &&
+           (x + width) <= (m_modalRegionX + m_modalRegionWidth) &&
+           (y + height) <= (m_modalRegionY + m_modalRegionHeight);
+}
+
 bool UIContext::Button(const std::string& label, float x, float y, float width, float height, uint32_t baseColor, uint32_t hoverColor, uint32_t clickColor) {
     bool isHovered = false;
     bool isClicked = false;
+    const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
 
-    if (m_inputManager) {
+    if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
@@ -43,7 +71,8 @@ bool UIContext::Button(const std::string& label, float x, float y, float width, 
 
 bool UIContext::TextInput(const std::string& id, std::string& text, float x, float y, float width, float height, bool& isActive) {
     bool isHovered = false;
-    if (m_inputManager) {
+    const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
+    if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
         if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
@@ -82,8 +111,9 @@ bool UIContext::TextInput(const std::string& id, std::string& text, float x, flo
 bool UIContext::Checkbox(const std::string& label, bool& value, float x, float y, float size) {
     bool isHovered = false;
     bool isClicked = false;
+    const bool interactionAllowed = IsInteractionAllowed(x, y, size, size);
 
-    if (m_inputManager) {
+    if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
@@ -121,8 +151,9 @@ bool UIContext::DragFloat(const std::string& label, float& value, float dragSpee
     float labelWidth = width * 0.3f;
     float boxX = x + labelWidth;
     float boxWidth = width - labelWidth;
+    const bool interactionAllowed = IsInteractionAllowed(boxX, y, boxWidth, height);
 
-    if (m_inputManager) {
+    if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
@@ -146,6 +177,8 @@ bool UIContext::DragFloat(const std::string& label, float& value, float dragSpee
                 m_activeSliderId = "";
             }
         }
+    } else if (m_activeSliderId == label) {
+        m_activeSliderId.clear();
     }
 
     if (m_drawList) {
@@ -182,8 +215,9 @@ void UIContext::Image(uint32_t textureID, float x, float y, float width, float h
 bool UIContext::ImageButton(uint32_t textureID, float x, float y, float width, float height, uint32_t baseColor, uint32_t hoverColor, uint32_t clickColor) {
     bool isHovered = false;
     bool isClicked = false;
+    const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
 
-    if (m_inputManager) {
+    if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 

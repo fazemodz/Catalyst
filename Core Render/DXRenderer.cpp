@@ -15,6 +15,7 @@
 #include <vector>
 #include "PrimitiveGenerator.h"
 #include "ModelLoader.h"
+#include "../Blueprint/Nodes/BlueprintNodeLibrary.h"
 #include "../Launcher.h" 
 
 using namespace DirectX;
@@ -87,6 +88,10 @@ bool RayIntersectsSphere(const XMFLOAT3& origin, const XMFLOAT3& direction,
     return true;
 }
 
+bool IsPointInRect(float px, float py, float x, float y, float width, float height) {
+    return px >= x && px <= (x + width) && py >= y && py <= (y + height);
+}
+
 MeshData ParseActorAssetForPreview(const std::wstring& filepath) {
     try {
         return ModelLoader::LoadMeshData(filepath);
@@ -97,6 +102,16 @@ MeshData ParseActorAssetForPreview(const std::wstring& filepath) {
 
 float ComputePreviewRadius(const DirectX::XMFLOAT3& extents) {
     return (std::max)(0.35f, sqrtf(extents.x * extents.x + extents.y * extents.y + extents.z * extents.z));
+}
+
+void SetCursorVisibleState(bool visible) {
+    if (visible) {
+        while (ShowCursor(TRUE) < 0) {
+        }
+    } else {
+        while (ShowCursor(FALSE) >= 0) {
+        }
+    }
 }
 
 std::string WideToUtf8(const std::wstring& value) {
@@ -171,6 +186,33 @@ std::string EscapeJsonString(const std::string& value) {
 
 void DebugLog(const std::string& message) {
     OutputDebugStringA((message + "\n").c_str());
+}
+
+std::string NormalizeLinkedMaterialPath(const std::string& path) {
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    return normalized;
+}
+
+std::wstring JoinHumanList(const std::vector<std::wstring>& items) {
+    if (items.empty()) {
+        return L"";
+    }
+    if (items.size() == 1) {
+        return items.front();
+    }
+    if (items.size() == 2) {
+        return items[0] + L" and " + items[1];
+    }
+
+    std::wstring joined;
+    for (size_t index = 0; index < items.size(); ++index) {
+        if (index > 0) {
+            joined += (index + 1 == items.size()) ? L", and " : L", ";
+        }
+        joined += items[index];
+    }
+    return joined;
 }
 
 std::wstring MakeProjectRelativePath(const std::wstring& projectRoot, const std::wstring& path) {
@@ -576,6 +618,194 @@ void WriteJsonFloat3(std::ostream& outStream, const DirectX::XMFLOAT3& value) {
 void WriteJsonFloat4(std::ostream& outStream, const DirectX::XMFLOAT4& value) {
     outStream << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
 }
+
+std::wstring ResolveBlueprintReferencePath(const std::wstring& blueprintAssetPath, const std::string& storedPath) {
+    const std::wstring decodedPath = DecodeStoredPath(storedPath);
+    if (decodedPath.empty()) {
+        return L"";
+    }
+
+    fs::path resolvedPath(decodedPath);
+    if (resolvedPath.is_relative() && !blueprintAssetPath.empty()) {
+        resolvedPath = fs::path(blueprintAssetPath).parent_path() / resolvedPath;
+    }
+
+    return NormalizeAssetPath(resolvedPath.wstring());
+}
+
+uint32_t Float4ToUIntColor(const DirectX::XMFLOAT4& color) {
+    const auto ToByte = [](float value) {
+        const float clamped = (std::max)(0.0f, (std::min)(1.0f, value));
+        return static_cast<uint32_t>(std::lround(clamped * 255.0f));
+    };
+
+    const uint32_t a = ToByte(color.w);
+    const uint32_t r = ToByte(color.x);
+    const uint32_t g = ToByte(color.y);
+    const uint32_t b = ToByte(color.z);
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+bool IsUIButtonNodeType(const std::string& nodeTypeId) {
+    return nodeTypeId == BlueprintNodes::kButtonElementNodeId;
+}
+
+bool IsUICanvasNodeType(const std::string& nodeTypeId) {
+    return nodeTypeId == BlueprintNodes::kCanvasElementNodeId;
+}
+
+bool IsUIImageNodeType(const std::string& nodeTypeId) {
+    return nodeTypeId == BlueprintNodes::kImageElementNodeId;
+}
+
+bool IsUITextBlockNodeType(const std::string& nodeTypeId) {
+    return nodeTypeId == BlueprintNodes::kTextBlockElementNodeId;
+}
+
+bool IsUIElementNodeType(const std::string& nodeTypeId) {
+    return IsUICanvasNodeType(nodeTypeId) ||
+           IsUIButtonNodeType(nodeTypeId) ||
+           IsUIImageNodeType(nodeTypeId) ||
+           IsUITextBlockNodeType(nodeTypeId);
+}
+
+struct BlueprintRuntimeComponent {
+    std::string kind = "StaticMesh";
+    std::wstring assetPath;
+    DirectX::XMFLOAT3 location = {0.0f, 0.0f, 0.0f};
+    bool possessOnPlay = false;
+    PhysicsColliderShape triggerShape = PhysicsColliderShape::Box;
+    DirectX::XMFLOAT3 triggerExtents = {0.75f, 0.75f, 0.75f};
+    float triggerRadius = 0.75f;
+};
+
+struct BlueprintRuntimeNode {
+    std::string nodeTypeId;
+    std::wstring assetPath;
+};
+
+struct BlueprintRuntimeData {
+    bool playerCharacterController = false;
+    bool playerSpaceJump = false;
+    float playerMoveSpeed = 6.0f;
+    float playerJumpImpulse = 5.0f;
+    std::vector<BlueprintRuntimeComponent> components;
+    std::vector<std::wstring> viewportWidgetAssetPaths;
+};
+
+bool LoadBlueprintRuntimeData(const std::wstring& assetPath, BlueprintRuntimeData& outRuntimeData) {
+    outRuntimeData = {};
+    if (assetPath.empty()) {
+        return false;
+    }
+
+    std::ifstream inputFile(fs::path(assetPath), std::ios::binary);
+    if (!inputFile.is_open()) {
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
+    JsonValue rootValue;
+    JsonParser parser(content);
+    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
+        return false;
+    }
+
+    std::map<int, BlueprintRuntimeNode> runtimeNodes;
+    const JsonValue* nodesValue = FindJsonField(rootValue, "nodes");
+    if (nodesValue != nullptr && nodesValue->type == JsonValueType::Array) {
+        for (const JsonValue& nodeValue : nodesValue->arrayValue) {
+            if (nodeValue.type != JsonValueType::Object) {
+                continue;
+            }
+
+            const int nodeId = GetJsonInt(nodeValue, "id", 0);
+            const std::string nodeTypeId = GetJsonString(nodeValue, "nodeTypeId");
+            runtimeNodes[nodeId] = {
+                nodeTypeId,
+                ResolveBlueprintReferencePath(assetPath, GetJsonString(nodeValue, "assetPath"))
+            };
+            if (nodeTypeId == BlueprintNodes::kPlayerCharacterControllerNodeId) {
+                outRuntimeData.playerCharacterController = true;
+            } else if (nodeTypeId == BlueprintNodes::kPlayerSpaceJumpNodeId) {
+                outRuntimeData.playerSpaceJump = true;
+            }
+        }
+    }
+
+    const JsonValue* linksValue = FindJsonField(rootValue, "links");
+    if (linksValue != nullptr && linksValue->type == JsonValueType::Array) {
+        std::map<std::pair<int, int>, bool> createWidgetExecLinks;
+        std::map<std::pair<int, int>, bool> createWidgetDataLinks;
+
+        for (const JsonValue& linkValue : linksValue->arrayValue) {
+            if (linkValue.type != JsonValueType::Object) {
+                continue;
+            }
+
+            const int fromNodeId = GetJsonInt(linkValue, "fromNodeId", 0);
+            const int toNodeId = GetJsonInt(linkValue, "toNodeId", 0);
+            const auto fromNode = runtimeNodes.find(fromNodeId);
+            const auto toNode = runtimeNodes.find(toNodeId);
+            if (fromNode == runtimeNodes.end() || toNode == runtimeNodes.end()) {
+                continue;
+            }
+
+            if (fromNode->second.nodeTypeId != BlueprintNodes::kCreateWidgetNodeId ||
+                toNode->second.nodeTypeId != BlueprintNodes::kAddToViewportNodeId) {
+                continue;
+            }
+
+            const std::pair<int, int> linkKey = {fromNodeId, toNodeId};
+            const std::string fromPinKind = GetJsonString(linkValue, "fromPinKind", "Exec");
+            const std::string toPinKind = GetJsonString(linkValue, "toPinKind", "Exec");
+            if (fromPinKind == "Exec" && toPinKind == "Exec") {
+                createWidgetExecLinks[linkKey] = true;
+            } else if (fromPinKind == "Data" && toPinKind == "Data") {
+                createWidgetDataLinks[linkKey] = true;
+            }
+        }
+
+        for (const auto& createWidgetDataLink : createWidgetDataLinks) {
+            if (createWidgetExecLinks.find(createWidgetDataLink.first) == createWidgetExecLinks.end()) {
+                continue;
+            }
+
+            const auto createNode = runtimeNodes.find(createWidgetDataLink.first.first);
+            if (createNode == runtimeNodes.end() || createNode->second.assetPath.empty()) {
+                continue;
+            }
+
+            if (std::find(outRuntimeData.viewportWidgetAssetPaths.begin(),
+                          outRuntimeData.viewportWidgetAssetPaths.end(),
+                          createNode->second.assetPath) == outRuntimeData.viewportWidgetAssetPaths.end()) {
+                outRuntimeData.viewportWidgetAssetPaths.push_back(createNode->second.assetPath);
+            }
+        }
+    }
+
+    const JsonValue* componentsValue = FindJsonField(rootValue, "components");
+    if (componentsValue != nullptr && componentsValue->type == JsonValueType::Array) {
+        outRuntimeData.components.reserve(componentsValue->arrayValue.size());
+        for (const JsonValue& componentValue : componentsValue->arrayValue) {
+            if (componentValue.type != JsonValueType::Object) {
+                continue;
+            }
+
+            BlueprintRuntimeComponent component;
+            component.kind = GetJsonString(componentValue, "kind", "StaticMesh");
+            component.assetPath = ResolveBlueprintReferencePath(assetPath, GetJsonString(componentValue, "assetPath"));
+            component.location = GetJsonFloat3(componentValue, "location", {0.0f, 0.0f, 0.0f});
+            component.possessOnPlay = GetJsonBool(componentValue, "possessOnPlay", false);
+            component.triggerShape = PhysicsColliderShapeFromString(GetJsonString(componentValue, "triggerShape", "Box"));
+            component.triggerExtents = GetJsonFloat3(componentValue, "triggerExtents", {0.75f, 0.75f, 0.75f});
+            component.triggerRadius = GetJsonNumber(componentValue, "triggerRadius", 0.75f);
+            outRuntimeData.components.push_back(component);
+        }
+    }
+
+    return true;
+}
 }
 
 std::vector<ProjectInfo> DXRenderer::GetRecentProjectsInfo() {
@@ -645,6 +875,320 @@ std::wstring DXRenderer::ResolveActiveMapDisplayName() const {
     return L"Untitled Map";
 }
 
+std::string DXRenderer::BuildSceneDocument(const std::vector<GameObject>& objectsToSave, const std::wstring& projectRoot) const {
+    std::ostringstream outFile;
+    outFile << std::fixed << std::setprecision(6);
+    outFile << "{\n";
+    outFile << "  \"type\": \"CatalystScene\",\n";
+    outFile << "  \"version\": 2,\n";
+    outFile << "  \"objects\": [\n";
+
+    for (size_t objectIndex = 0; objectIndex < objectsToSave.size(); ++objectIndex) {
+        const GameObject& object = objectsToSave[objectIndex];
+
+        const std::wstring assetSourcePath =
+            (object.asset && !object.asset->sourcePath.empty())
+            ? MakeProjectRelativePath(projectRoot, DecodeStoredPath(object.asset->sourcePath))
+            : L"";
+        const std::wstring blueprintAssetPath =
+            object.blueprintAssetPath.empty()
+            ? L""
+            : MakeProjectRelativePath(projectRoot, object.blueprintAssetPath);
+        const std::wstring assignedMaterialPath =
+            object.assignedMaterial ? MakeProjectRelativePath(projectRoot, GetCachedMaterialPath(object.assignedMaterial)) : L"";
+
+        outFile << "    {\n";
+        outFile << "      \"name\": \"" << EscapeJsonString(object.name) << "\",\n";
+        outFile << "      \"type\": \"" << ObjectTypeToString(object.type) << "\",\n";
+        outFile << "      \"assetId\": " << (object.asset ? object.asset->id : -1) << ",\n";
+        outFile << "      \"assetName\": \"" << EscapeJsonString(object.asset ? object.asset->name : "") << "\",\n";
+        outFile << "      \"assetSource\": \"" << EscapeJsonString(WideToUtf8(assetSourcePath)) << "\",\n";
+        outFile << "      \"blueprintAsset\": \"" << EscapeJsonString(WideToUtf8(blueprintAssetPath)) << "\",\n";
+        outFile << "      \"position\": ";
+        WriteJsonFloat3(outFile, object.position);
+        outFile << ",\n";
+        outFile << "      \"rotation\": ";
+        WriteJsonFloat3(outFile, object.rotation);
+        outFile << ",\n";
+        outFile << "      \"scale\": ";
+        WriteJsonFloat3(outFile, object.scale);
+        outFile << ",\n";
+        outFile << "      \"color\": ";
+        WriteJsonFloat4(outFile, object.color);
+        outFile << ",\n";
+        outFile << "      \"skyHorizonColor\": ";
+        WriteJsonFloat4(outFile, object.skyHorizonColor);
+        outFile << ",\n";
+        outFile << "      \"assignedMaterial\": \"" << EscapeJsonString(WideToUtf8(assignedMaterialPath)) << "\",\n";
+        outFile << "      \"overrideTextures\": {\n";
+        outFile << "        \"albedo\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAlbedo)))) << "\",\n";
+        outFile << "        \"normal\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideNormal)))) << "\",\n";
+        outFile << "        \"metallic\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideMetallic)))) << "\",\n";
+        outFile << "        \"roughness\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideRoughness)))) << "\",\n";
+        outFile << "        \"ao\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAO)))) << "\"\n";
+        outFile << "      },\n";
+        outFile << "      \"lightIntensity\": " << object.lightIntensity << ",\n";
+        outFile << "      \"postProcess\": {\n";
+        outFile << "        \"exposure\": " << object.ppSettings.exposure << ",\n";
+        outFile << "        \"colorTint\": ";
+        WriteJsonFloat3(outFile, object.ppSettings.colorTint);
+        outFile << ",\n";
+        outFile << "        \"bloomThreshold\": " << object.ppSettings.bloomThreshold << ",\n";
+        outFile << "        \"bloomIntensity\": " << object.ppSettings.bloomIntensity << ",\n";
+        outFile << "        \"blendRadius\": " << object.ppSettings.blendRadius << "\n";
+        outFile << "      },\n";
+        outFile << "      \"physics\": {\n";
+        outFile << "        \"rigidBody\": {\n";
+        outFile << "          \"enabled\": " << (object.physics.rigidBody.enabled ? "true" : "false") << ",\n";
+        outFile << "          \"bodyType\": \"" << PhysicsBodyTypeToString(object.physics.rigidBody.bodyType) << "\",\n";
+        outFile << "          \"useGravity\": " << (object.physics.rigidBody.useGravity ? "true" : "false") << ",\n";
+        outFile << "          \"mass\": " << object.physics.rigidBody.mass << ",\n";
+        outFile << "          \"linearDamping\": " << object.physics.rigidBody.linearDamping << ",\n";
+        outFile << "          \"restitution\": " << object.physics.rigidBody.restitution << ",\n";
+        outFile << "          \"velocity\": ";
+        WriteJsonFloat3(outFile, object.physics.rigidBody.velocity);
+        outFile << "\n";
+        outFile << "        },\n";
+        outFile << "        \"collider\": {\n";
+        outFile << "          \"enabled\": " << (object.physics.collider.enabled ? "true" : "false") << ",\n";
+        outFile << "          \"shape\": \"" << PhysicsColliderShapeToString(object.physics.collider.shape) << "\",\n";
+        outFile << "          \"isTrigger\": " << (object.physics.collider.isTrigger ? "true" : "false") << ",\n";
+        outFile << "          \"centerOffset\": ";
+        WriteJsonFloat3(outFile, object.physics.collider.centerOffset);
+        outFile << ",\n";
+        outFile << "          \"boxExtents\": ";
+        WriteJsonFloat3(outFile, object.physics.collider.boxExtents);
+        outFile << ",\n";
+        outFile << "          \"sphereRadius\": " << object.physics.collider.sphereRadius << "\n";
+        outFile << "        }\n";
+        outFile << "      }\n";
+        outFile << "    " << (objectIndex + 1 < objectsToSave.size() ? "}," : "}");
+        outFile << "\n";
+    }
+
+    outFile << "  ]\n";
+    outFile << "}\n";
+    return outFile.str();
+}
+
+std::string DXRenderer::BuildCurrentSceneDocument() const {
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (projectFilePath.empty()) {
+        return "";
+    }
+
+    const std::wstring projectRoot = fs::path(projectFilePath).parent_path().wstring();
+    const std::vector<GameObject>& objectsToSave =
+        (m_editorUI.State.isPlaying && !m_playModeSnapshot.empty()) ? m_playModeSnapshot : m_gameObjects;
+    return BuildSceneDocument(objectsToSave, projectRoot);
+}
+
+std::string DXRenderer::BuildMaterialDocument(const Material& material) const {
+    std::ostringstream file;
+    file << "{\n";
+    file << "  \"type\": \"CatalystMaterial\",\n";
+    file << "  \"version\": 1,\n";
+    file << "  \"textures\": {\n";
+    file << "    \"albedo\": \"" << EscapeJsonString(NormalizeLinkedMaterialPath(material.albedoPath)) << "\",\n";
+    file << "    \"normal\": \"" << EscapeJsonString(NormalizeLinkedMaterialPath(material.normalPath)) << "\",\n";
+    file << "    \"roughness\": \"" << EscapeJsonString(NormalizeLinkedMaterialPath(material.roughnessPath)) << "\"\n";
+    file << "  }\n";
+    file << "}\n";
+    return file.str();
+}
+
+bool DXRenderer::HasUnsavedSceneChanges() const {
+    if (m_engineState != EngineState::Editor ||
+        m_standaloneActorViewerWindow ||
+        m_standaloneMaterialEditorWindow ||
+        m_standaloneBlueprintEditorWindow) {
+        return false;
+    }
+
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (projectFilePath.empty()) {
+        return false;
+    }
+
+    return BuildCurrentSceneDocument() != m_savedSceneDocument;
+}
+
+bool DXRenderer::HasUnsavedMaterialEditorChanges() const {
+    if (!m_editorUI.State.showMaterialAssetViewer || m_materialEditorMaterial == nullptr || m_editorUI.State.materialEditorPath.empty()) {
+        return false;
+    }
+
+    return BuildMaterialDocument(*m_materialEditorMaterial) != m_savedMaterialDocument;
+}
+
+void DXRenderer::RefreshSceneSavedDocument() {
+    m_savedSceneDocument = BuildCurrentSceneDocument();
+}
+
+void DXRenderer::RefreshMaterialEditorSavedDocument() {
+    if (m_materialEditorMaterial == nullptr || m_editorUI.State.materialEditorPath.empty()) {
+        m_savedMaterialDocument.clear();
+        return;
+    }
+
+    m_savedMaterialDocument = BuildMaterialDocument(*m_materialEditorMaterial);
+}
+
+bool DXRenderer::SaveMaterialAssetEditor() {
+    if (m_materialEditorMaterial == nullptr || m_editorUI.State.materialEditorPath.empty()) {
+        return false;
+    }
+
+    if (!m_materialEditorMaterial->SaveToFile(m_editorUI.State.materialEditorPath)) {
+        return false;
+    }
+
+    SyncMaterialTextures(*m_materialEditorMaterial);
+    std::error_code ec;
+    m_materialEditorMaterial->lastWriteTime = fs::last_write_time(m_editorUI.State.materialEditorPath, ec);
+    RefreshMaterialEditorSavedDocument();
+    return true;
+}
+
+bool DXRenderer::HasPendingUnsavedChanges() const {
+    return HasUnsavedSceneChanges() || m_editorUI.HasUnsavedBlueprintChanges() || HasUnsavedMaterialEditorChanges();
+}
+
+std::wstring DXRenderer::GetUnsavedChangesDescription() const {
+    return DescribeUnsavedChanges();
+}
+
+void DXRenderer::OpenClosePrompt(bool closeAllWindows, const std::wstring& summaryOverride) {
+    m_showClosePrompt = true;
+    m_closePromptCloseAllWindows = closeAllWindows;
+    m_closePromptSummary = summaryOverride.empty() ? DescribeUnsavedChanges() : summaryOverride;
+    m_pendingWindowCommand = WindowCommand::None;
+    if (m_closePromptSummary.empty()) {
+        m_closePromptSummary = closeAllWindows ? L"all open work" : L"this window";
+    }
+    m_closePromptError.clear();
+}
+
+bool DXRenderer::IsClosePromptOpen() const {
+    return m_showClosePrompt;
+}
+
+void DXRenderer::SetClosePromptError(const std::wstring& errorMessage) {
+    if (m_showClosePrompt) {
+        m_closePromptError = errorMessage;
+    }
+}
+
+bool DXRenderer::SavePendingUnsavedChanges() {
+    return SavePendingOpenDocuments();
+}
+
+DXRenderer::WindowCommand DXRenderer::ConsumePendingWindowCommand() {
+    const WindowCommand pendingCommand = m_pendingWindowCommand;
+    m_pendingWindowCommand = WindowCommand::None;
+    return pendingCommand;
+}
+
+std::wstring DXRenderer::DescribeUnsavedChanges() const {
+    std::vector<std::wstring> items;
+    if (HasUnsavedSceneChanges()) {
+        items.push_back(L"map \"" + ResolveActiveMapDisplayName() + L"\"");
+    }
+    if (m_editorUI.HasUnsavedBlueprintChanges()) {
+        items.push_back(L"Blueprint \"" + m_editorUI.GetOpenBlueprintDisplayName() + L"\"");
+    }
+    if (HasUnsavedMaterialEditorChanges()) {
+        items.push_back(L"material \"" + Utf8ToWide(m_editorUI.State.materialEditorTitle) + L"\"");
+    }
+
+    return JoinHumanList(items);
+}
+
+bool DXRenderer::SavePendingOpenDocuments() {
+    if (HasUnsavedSceneChanges() && !SaveCurrentScene()) {
+        return false;
+    }
+    if (m_editorUI.HasUnsavedBlueprintChanges() && !m_editorUI.SaveBlueprintChanges()) {
+        return false;
+    }
+    if (HasUnsavedMaterialEditorChanges() && !SaveMaterialAssetEditor()) {
+        return false;
+    }
+    return true;
+}
+
+void DXRenderer::ClearClosePrompt() {
+    m_showClosePrompt = false;
+    m_closePromptCloseAllWindows = false;
+    m_closePromptSummary.clear();
+    m_closePromptError.clear();
+}
+
+void DXRenderer::DrawClosePrompt(float width, float height) {
+    if (!m_showClosePrompt) {
+        return;
+    }
+
+    const float popupW = std::clamp(width * 0.34f, 460.0f, 580.0f);
+    const float popupH = m_closePromptError.empty() ? 250.0f : 290.0f;
+    const float popupX = (width - popupW) * 0.5f;
+    const float popupY = (height - popupH) * 0.5f;
+    const float bodyX = popupX + 22.0f;
+    const float bodyW = popupW - 44.0f;
+    const float footerY = popupY + popupH - 68.0f;
+    const float buttonY = popupY + popupH - 48.0f;
+    const std::string title = m_closePromptCloseAllWindows
+        ? "Close All Windows?"
+        : "Close Window?";
+    const std::string summary = WideToUtf8(m_closePromptSummary);
+    const std::string intro = m_closePromptCloseAllWindows
+        ? "Choose what to do with your unsaved work before Catalyst closes every open window."
+        : "Choose what to do with your unsaved work before this window closes.";
+    const std::string actionHint = "Save writes the current work to disk. Discard closes without saving.";
+    const std::string errorText = WideToUtf8(m_closePromptError);
+
+    m_uiDrawList.AddRectFilled(0.0f, 0.0f, width, height, 0xAA000000);
+    m_uiDrawList.AddRectFilled(popupX, popupY, popupW, popupH, 0xFF1A1A1A);
+    m_uiDrawList.AddRectFilled(popupX, popupY, popupW, 34.0f, 0xFF121212);
+    m_uiDrawList.AddRectFilled(popupX, popupY, popupW, 3.0f, 0xFFD77800);
+    m_uiDrawList.AddText(m_fontManager, title, popupX + 16.0f, popupY + 22.0f, 0xFFFFFFFF);
+    m_uiDrawList.AddText(m_fontManager, intro, bodyX, popupY + 72.0f, 0xFFB7BEC8, bodyW);
+    m_uiDrawList.AddText(m_fontManager, "Unsaved:", bodyX, popupY + 112.0f, 0xFFFFFFFF, bodyW);
+    m_uiDrawList.AddText(m_fontManager, summary, bodyX, popupY + 140.0f, 0xFFE6E6E6, bodyW);
+    m_uiDrawList.AddText(m_fontManager, actionHint, bodyX, popupY + 184.0f, 0xFF9FA8B3, bodyW);
+    if (!errorText.empty()) {
+        m_uiDrawList.AddText(m_fontManager, errorText, bodyX, popupY + 214.0f, 0xFFE07A7A, bodyW);
+    }
+    m_uiDrawList.AddRectFilled(popupX, footerY, popupW, 1.0f, 0xFF2B2B2B);
+
+    if (m_uiContext.Button("Cancel", popupX + 22.0f, buttonY, 110.0f, 32.0f,
+                           0xFF333333, 0xFF444444, 0xFF222222)) {
+        ClearClosePrompt();
+        return;
+    }
+
+    if (m_uiContext.Button("Discard", popupX + popupW - 266.0f, buttonY, 110.0f, 32.0f,
+                           0xFF5E2B2B, 0xFF7A3434, 0xFF8C3A3A)) {
+        ClearClosePrompt();
+        m_pendingWindowCommand = m_closePromptCloseAllWindows
+            ? WindowCommand::CloseAllDiscard
+            : WindowCommand::CloseThisWindow;
+        return;
+    }
+
+    if (m_uiContext.Button("Save", popupX + popupW - 140.0f, buttonY, 110.0f, 32.0f,
+                           0xFF29573B, 0xFF317146, 0xFF20462F)) {
+        if (m_closePromptCloseAllWindows) {
+            m_pendingWindowCommand = WindowCommand::CloseAllSave;
+        } else if (SavePendingOpenDocuments()) {
+            ClearClosePrompt();
+            m_pendingWindowCommand = WindowCommand::CloseThisWindow;
+        } else {
+            m_closePromptError = L"One or more files could not be saved. Fix that first, or discard the changes.";
+        }
+    }
+}
+
 void DXRenderer::RefreshWindowTitle() {
     if (m_hwnd == nullptr || m_standaloneActorViewerWindow || m_standaloneMaterialEditorWindow) {
         return;
@@ -662,6 +1206,637 @@ void DXRenderer::RefreshWindowTitle() {
     if (title != m_lastWindowTitle) {
         SetWindowTextW(m_hwnd, title.c_str());
         m_lastWindowTitle = title;
+    }
+}
+
+void DXRenderer::RefreshObjectBlueprintRuntime(GameObject& object) {
+    object.blueprintPlayerControlled = false;
+    object.blueprintSpaceJumpEnabled = false;
+    object.blueprintMoveSpeed = 6.0f;
+    object.blueprintJumpImpulse = 5.0f;
+    object.blueprintJumpVelocity = 0.0f;
+    object.blueprintGroundHeight = object.position.y;
+    object.blueprintPossessCamera = false;
+    object.blueprintCameraOffset = {0.0f, 2.0f, -5.0f};
+    object.blueprintHasTrigger = false;
+    object.blueprintTriggerShape = PhysicsColliderShape::Box;
+    object.blueprintTriggerOffset = {0.0f, 0.0f, 0.0f};
+    object.blueprintTriggerExtents = {0.75f, 0.75f, 0.75f};
+    object.blueprintTriggerRadius = 0.75f;
+    object.blueprintViewportWidgetAssetPaths.clear();
+
+    if (object.blueprintAssetPath.empty()) {
+        return;
+    }
+
+    BlueprintRuntimeData runtimeData;
+    if (!LoadBlueprintRuntimeData(object.blueprintAssetPath, runtimeData)) {
+        return;
+    }
+
+    object.blueprintPlayerControlled = runtimeData.playerCharacterController;
+    object.blueprintSpaceJumpEnabled = runtimeData.playerSpaceJump;
+    object.blueprintMoveSpeed = runtimeData.playerMoveSpeed;
+    object.blueprintJumpImpulse = runtimeData.playerJumpImpulse;
+    object.blueprintJumpVelocity = 0.0f;
+    object.blueprintGroundHeight = object.position.y;
+    object.blueprintViewportWidgetAssetPaths = runtimeData.viewportWidgetAssetPaths;
+    object.asset = nullptr;
+
+    bool appliedMeshComponent = false;
+    for (const BlueprintRuntimeComponent& component : runtimeData.components) {
+        if (!appliedMeshComponent &&
+            (component.kind == "StaticMesh" || component.kind == "SkeletalMesh") &&
+            !component.assetPath.empty()) {
+            Asset* resolvedAsset = ResolveSceneAsset(-1, fs::path(component.assetPath).stem().string(), component.assetPath);
+            if (resolvedAsset != nullptr) {
+                object.asset = resolvedAsset;
+                appliedMeshComponent = true;
+            }
+        }
+
+        if (!object.blueprintPossessCamera && component.kind == "Camera" && component.possessOnPlay) {
+            object.blueprintPossessCamera = true;
+            object.blueprintCameraOffset = component.location;
+        }
+
+        if (!object.blueprintHasTrigger && component.kind == "Trigger") {
+            object.blueprintHasTrigger = true;
+            object.blueprintTriggerShape = component.triggerShape;
+            object.blueprintTriggerOffset = component.location;
+            object.blueprintTriggerExtents = component.triggerExtents;
+            object.blueprintTriggerRadius = component.triggerRadius;
+        }
+    }
+}
+
+void DXRenderer::RefreshSceneBlueprintRuntime() {
+    for (GameObject& object : m_gameObjects) {
+        RefreshObjectBlueprintRuntime(object);
+    }
+}
+
+void DXRenderer::SetPlayerMouseLookLocked(bool locked, float viewportTop, float viewportWidth, float viewportHeight) {
+    if (m_hwnd == nullptr) {
+        m_playerMouseLookLocked = false;
+        return;
+    }
+
+    if (!locked) {
+        if (!m_playerMouseLookLocked) {
+            return;
+        }
+
+        m_playerMouseLookLocked = false;
+        ClipCursor(nullptr);
+        SetCursorVisibleState(true);
+        return;
+    }
+
+    m_playerMouseLookLocked = true;
+    SetCursorVisibleState(false);
+
+    const int left = 0;
+    const int top = static_cast<int>(std::lround(viewportTop));
+    const int right = static_cast<int>(std::lround(viewportWidth));
+    const int bottom = static_cast<int>(std::lround(viewportTop + viewportHeight));
+    RECT clipRect = {left, top, right, bottom};
+    POINT topLeft = {clipRect.left, clipRect.top};
+    POINT bottomRight = {clipRect.right, clipRect.bottom};
+    ClientToScreen(m_hwnd, &topLeft);
+    ClientToScreen(m_hwnd, &bottomRight);
+    RECT screenClipRect = {topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
+    ClipCursor(&screenClipRect);
+}
+
+void DXRenderer::ApplyBlueprintGameplayNodes(float deltaTime, float viewportTop, float viewportWidth, float viewportHeight, bool mouseInViewport) {
+    constexpr float kBlueprintJumpGravity = 18.0f;
+    constexpr float kMouseLookSensitivity = 0.005f;
+    constexpr float kMinMouseLookPitch = -1.05f;
+    constexpr float kMaxMouseLookPitch = 0.7f;
+
+    if (deltaTime <= 0.0f) {
+        return;
+    }
+
+    for (GameObject& object : m_gameObjects) {
+        if (!object.blueprintHasTrigger) {
+            continue;
+        }
+
+        object.physics.collider.enabled = true;
+        object.physics.collider.isTrigger = true;
+        object.physics.collider.shape = object.blueprintTriggerShape;
+        object.physics.collider.centerOffset = object.blueprintTriggerOffset;
+        object.physics.collider.boxExtents = object.blueprintTriggerExtents;
+        object.physics.collider.sphereRadius = (std::max)(0.05f, object.blueprintTriggerRadius);
+    }
+
+    const bool moveForward = (GetAsyncKeyState('W') & 0x8000) != 0;
+    const bool moveBackward = (GetAsyncKeyState('S') & 0x8000) != 0;
+    const bool moveLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
+    const bool moveRight = (GetAsyncKeyState('D') & 0x8000) != 0;
+    const bool jumpPressed = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+    const bool jumpTriggered = jumpPressed && !m_jumpKeyWasDown;
+    const bool escapeDown = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+    const bool escapeTriggered = escapeDown && !m_escapeKeyWasDown;
+
+    float inputX = 0.0f;
+    float inputZ = 0.0f;
+    if (moveLeft) {
+        inputX -= 1.0f;
+    }
+    if (moveRight) {
+        inputX += 1.0f;
+    }
+    if (moveBackward) {
+        inputZ -= 1.0f;
+    }
+    if (moveForward) {
+        inputZ += 1.0f;
+    }
+
+    const float inputLength = std::sqrt(inputX * inputX + inputZ * inputZ);
+    if (inputLength > 0.001f) {
+        inputX /= inputLength;
+        inputZ /= inputLength;
+    }
+
+    GameObject* controlledObject = nullptr;
+    for (GameObject& object : m_gameObjects) {
+        if (object.blueprintPlayerControlled) {
+            controlledObject = &object;
+            break;
+        }
+    }
+
+    for (GameObject& object : m_gameObjects) {
+        if (&object == controlledObject || !object.blueprintPlayerControlled) {
+            continue;
+        }
+
+        object.physics.rigidBody.enabled = false;
+        object.physics.rigidBody.velocity.x = 0.0f;
+        object.physics.rigidBody.velocity.y = 0.0f;
+        object.physics.rigidBody.velocity.z = 0.0f;
+    }
+
+    if (controlledObject != nullptr) {
+        const bool canCaptureMouse =
+            g_InputManager != nullptr &&
+            m_hwnd != nullptr &&
+            GetForegroundWindow() == m_hwnd &&
+            viewportWidth > 1.0f &&
+            viewportHeight > 1.0f;
+
+        if (m_playerMouseLookLocked && escapeTriggered) {
+            SetPlayerMouseLookLocked(false);
+            m_playerMouseLookSuppressed = true;
+        } else if (!canCaptureMouse && m_playerMouseLookLocked) {
+            SetPlayerMouseLookLocked(false);
+        } else if (canCaptureMouse && !m_playerMouseLookLocked && !m_playerMouseLookSuppressed) {
+            SetPlayerMouseLookLocked(true, viewportTop, viewportWidth, viewportHeight);
+        } else if (canCaptureMouse && !m_playerMouseLookLocked && m_playerMouseLookSuppressed &&
+                   mouseInViewport && g_InputManager->IsMouseButtonPressed(0)) {
+            m_playerMouseLookSuppressed = false;
+            SetPlayerMouseLookLocked(true, viewportTop, viewportWidth, viewportHeight);
+        }
+
+        if (m_playerMouseLookLocked && canCaptureMouse) {
+            const int centerClientX = static_cast<int>(std::lround(viewportWidth * 0.5f));
+            const int centerClientY = static_cast<int>(std::lround(viewportTop + viewportHeight * 0.5f));
+            const float deltaX = static_cast<float>(g_InputManager->GetMouseX() - centerClientX);
+            const float deltaY = static_cast<float>(g_InputManager->GetMouseY() - centerClientY);
+
+            m_playerControllerYaw += deltaX * kMouseLookSensitivity;
+            m_playerControllerPitch = std::clamp(m_playerControllerPitch + deltaY * kMouseLookSensitivity,
+                                                 kMinMouseLookPitch, kMaxMouseLookPitch);
+
+            POINT centerScreenPoint = {centerClientX, centerClientY};
+            ClientToScreen(m_hwnd, &centerScreenPoint);
+            SetCursorPos(centerScreenPoint.x, centerScreenPoint.y);
+        }
+
+        controlledObject->rotation.y = m_playerControllerYaw;
+        const float moveSpeed = (std::max)(0.1f, controlledObject->blueprintMoveSpeed);
+        if (controlledObject->physics.rigidBody.enabled || controlledObject->physics.collider.enabled) {
+            controlledObject->physics.collider.enabled = true;
+            controlledObject->physics.rigidBody.enabled = false;
+            controlledObject->physics.rigidBody.bodyType = PhysicsBodyType::Static;
+            controlledObject->physics.rigidBody.useGravity = false;
+            controlledObject->physics.rigidBody.linearDamping = 0.0f;
+            controlledObject->physics.rigidBody.velocity.x = 0.0f;
+            controlledObject->physics.rigidBody.velocity.y = 0.0f;
+        }
+
+        const float forwardX = std::sin(m_playerControllerYaw);
+        const float forwardZ = std::cos(m_playerControllerYaw);
+        const float rightX = std::cos(m_playerControllerYaw);
+        const float rightZ = -std::sin(m_playerControllerYaw);
+
+        controlledObject->position.x += (rightX * inputX + forwardX * inputZ) * moveSpeed * deltaTime;
+        controlledObject->position.z += (rightZ * inputX + forwardZ * inputZ) * moveSpeed * deltaTime;
+
+        if (controlledObject->blueprintSpaceJumpEnabled) {
+            const float groundHeight = controlledObject->blueprintGroundHeight;
+            const bool grounded = controlledObject->position.y <= (groundHeight + 0.001f) &&
+                                  controlledObject->blueprintJumpVelocity <= 0.0f;
+            if (grounded) {
+                controlledObject->position.y = groundHeight;
+                controlledObject->blueprintJumpVelocity = 0.0f;
+                if (jumpTriggered) {
+                    controlledObject->blueprintJumpVelocity = (std::max)(1.5f, controlledObject->blueprintJumpImpulse);
+                }
+            }
+
+            if (controlledObject->blueprintJumpVelocity != 0.0f || controlledObject->position.y > groundHeight) {
+                controlledObject->position.y += controlledObject->blueprintJumpVelocity * deltaTime;
+                controlledObject->blueprintJumpVelocity -= kBlueprintJumpGravity * deltaTime;
+                if (controlledObject->position.y <= groundHeight) {
+                    controlledObject->position.y = groundHeight;
+                    controlledObject->blueprintJumpVelocity = 0.0f;
+                }
+            }
+        } else {
+            controlledObject->blueprintJumpVelocity = 0.0f;
+            controlledObject->position.y = controlledObject->blueprintGroundHeight;
+        }
+
+        const XMMATRIX cameraRotation = XMMatrixRotationRollPitchYaw(m_playerControllerPitch, m_playerControllerYaw, 0.0f);
+        XMFLOAT3 rotatedCameraOffset = controlledObject->blueprintCameraOffset;
+        XMStoreFloat3(&rotatedCameraOffset, XMVector3TransformCoord(XMLoadFloat3(&controlledObject->blueprintCameraOffset), cameraRotation));
+        const XMFLOAT3 cameraPosition = {
+            controlledObject->position.x + rotatedCameraOffset.x,
+            controlledObject->position.y + rotatedCameraOffset.y,
+            controlledObject->position.z + rotatedCameraOffset.z
+        };
+        const XMFLOAT3 cameraTarget = {
+            controlledObject->position.x,
+            controlledObject->position.y + 1.0f,
+            controlledObject->position.z
+        };
+        m_camera.SetLookAt(cameraPosition, cameraTarget);
+    } else {
+        SetPlayerMouseLookLocked(false);
+        m_playerMouseLookSuppressed = false;
+    }
+
+    for (const GameObject& object : m_gameObjects) {
+        if (controlledObject != nullptr) {
+            break;
+        }
+        if (!object.blueprintPossessCamera) {
+            continue;
+        }
+
+        DirectX::XMFLOAT3 cameraPosition = {
+            object.position.x + object.blueprintCameraOffset.x,
+            object.position.y + object.blueprintCameraOffset.y,
+            object.position.z + object.blueprintCameraOffset.z
+        };
+        DirectX::XMFLOAT3 cameraTarget = {
+            object.position.x,
+            object.position.y + 1.0f,
+            object.position.z
+        };
+        m_camera.SetLookAt(cameraPosition, cameraTarget);
+        break;
+    }
+
+    m_jumpKeyWasDown = jumpPressed;
+    m_escapeKeyWasDown = escapeDown;
+}
+
+bool DXRenderer::LoadRuntimeWidgetInstance(const std::wstring& assetPath, RuntimeWidgetInstance& outInstance) {
+    outInstance = {};
+    outInstance.assetPath = assetPath;
+    if (assetPath.empty()) {
+        return false;
+    }
+
+    std::ifstream inputFile(fs::path(assetPath), std::ios::binary);
+    if (!inputFile.is_open()) {
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
+    JsonValue rootValue;
+    JsonParser parser(content);
+    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
+        return false;
+    }
+
+    if (GetJsonString(rootValue, "type") != "CatalystUIBlueprint") {
+        return false;
+    }
+
+    const JsonValue* graphValue = FindJsonField(rootValue, "graph");
+    if (graphValue == nullptr || graphValue->type != JsonValueType::Object) {
+        return false;
+    }
+
+    const JsonValue* nodesValue = FindJsonField(*graphValue, "nodes");
+    if (nodesValue != nullptr && nodesValue->type == JsonValueType::Array) {
+        outInstance.nodes.reserve(nodesValue->arrayValue.size());
+        for (const JsonValue& nodeValue : nodesValue->arrayValue) {
+            if (nodeValue.type != JsonValueType::Object) {
+                continue;
+            }
+
+            RuntimeWidgetNode node;
+            node.id = GetJsonInt(nodeValue, "id", 0);
+            node.nodeTypeId = GetJsonString(nodeValue, "nodeTypeId");
+            node.displayText = GetJsonString(nodeValue, "displayText");
+            node.canvasX = GetJsonNumber(nodeValue, "canvasX", 0.0f);
+            node.canvasY = GetJsonNumber(nodeValue, "canvasY", 0.0f);
+            node.canvasWidth = GetJsonNumber(nodeValue, "canvasWidth", 120.0f);
+            node.canvasHeight = GetJsonNumber(nodeValue, "canvasHeight", 40.0f);
+            node.tint = GetJsonFloat4(nodeValue, "tint", {1.0f, 1.0f, 1.0f, 1.0f});
+
+            if (node.displayText.empty()) {
+                if (IsUIButtonNodeType(node.nodeTypeId)) {
+                    node.displayText = "Button";
+                } else if (IsUITextBlockNodeType(node.nodeTypeId)) {
+                    node.displayText = "Text";
+                } else if (IsUICanvasNodeType(node.nodeTypeId)) {
+                    node.displayText = "Canvas";
+                } else if (IsUIImageNodeType(node.nodeTypeId)) {
+                    node.displayText = "Image";
+                }
+            }
+
+            outInstance.nodes.push_back(node);
+        }
+    }
+
+    const JsonValue* linksValue = FindJsonField(*graphValue, "links");
+    if (linksValue != nullptr && linksValue->type == JsonValueType::Array) {
+        outInstance.links.reserve(linksValue->arrayValue.size());
+        for (const JsonValue& linkValue : linksValue->arrayValue) {
+            if (linkValue.type != JsonValueType::Object) {
+                continue;
+            }
+
+            RuntimeWidgetLink link;
+            link.fromNodeId = GetJsonInt(linkValue, "fromNodeId", 0);
+            link.toNodeId = GetJsonInt(linkValue, "toNodeId", 0);
+            link.fromPinKind = GetJsonString(linkValue, "fromPinKind", "Exec");
+            link.toPinKind = GetJsonString(linkValue, "toPinKind", "Exec");
+            outInstance.links.push_back(link);
+        }
+    }
+
+    return true;
+}
+
+DXRenderer::RuntimeWidgetNode* DXRenderer::FindRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId) {
+    for (RuntimeWidgetNode& node : instance.nodes) {
+        if (node.id == nodeId) {
+            return &node;
+        }
+    }
+    return nullptr;
+}
+
+const DXRenderer::RuntimeWidgetNode* DXRenderer::FindRuntimeWidgetNode(const RuntimeWidgetInstance& instance, int nodeId) const {
+    for (const RuntimeWidgetNode& node : instance.nodes) {
+        if (node.id == nodeId) {
+            return &node;
+        }
+    }
+    return nullptr;
+}
+
+void DXRenderer::ExecuteRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId) {
+    std::vector<int> pendingNodes = {nodeId};
+    std::vector<int> visitedNodes;
+
+    while (!pendingNodes.empty()) {
+        const int currentNodeId = pendingNodes.back();
+        pendingNodes.pop_back();
+        if (std::find(visitedNodes.begin(), visitedNodes.end(), currentNodeId) != visitedNodes.end()) {
+            continue;
+        }
+        visitedNodes.push_back(currentNodeId);
+
+        RuntimeWidgetNode* currentNode = FindRuntimeWidgetNode(instance, currentNodeId);
+        if (currentNode == nullptr) {
+            continue;
+        }
+
+        if (currentNode->nodeTypeId == BlueprintNodes::kSetTextColorNodeId) {
+            for (const RuntimeWidgetLink& link : instance.links) {
+                if (link.toNodeId != currentNodeId || link.fromPinKind != "Data" || link.toPinKind != "Data") {
+                    continue;
+                }
+
+                RuntimeWidgetNode* targetNode = FindRuntimeWidgetNode(instance, link.fromNodeId);
+                if (targetNode != nullptr && IsUITextBlockNodeType(targetNode->nodeTypeId)) {
+                    targetNode->tint = currentNode->tint;
+                }
+            }
+        }
+
+        for (const RuntimeWidgetLink& link : instance.links) {
+            if (link.fromNodeId == currentNodeId && link.fromPinKind == "Exec" && link.toPinKind == "Exec") {
+                pendingNodes.push_back(link.toNodeId);
+            }
+        }
+    }
+}
+
+void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportTop, float viewportWidth, float viewportHeight) {
+    struct ActiveWidgetRequest {
+        std::string key;
+        std::wstring assetPath;
+        std::string ownerName;
+    };
+
+    std::vector<ActiveWidgetRequest> activeWidgets;
+    for (size_t objectIndex = 0; objectIndex < m_gameObjects.size(); ++objectIndex) {
+        const GameObject& object = m_gameObjects[objectIndex];
+        for (size_t widgetIndex = 0; widgetIndex < object.blueprintViewportWidgetAssetPaths.size(); ++widgetIndex) {
+            const std::wstring& widgetAssetPath = object.blueprintViewportWidgetAssetPaths[widgetIndex];
+            if (widgetAssetPath.empty()) {
+                continue;
+            }
+
+            activeWidgets.push_back({
+                std::to_string(objectIndex) + ":" + std::to_string(widgetIndex) + ":" + WideToUtf8(widgetAssetPath),
+                widgetAssetPath,
+                object.name.empty() ? "Blueprint Actor" : object.name
+            });
+        }
+    }
+
+    for (auto iter = m_runtimeWidgetInstances.begin(); iter != m_runtimeWidgetInstances.end();) {
+        const bool isStillActive = std::find_if(activeWidgets.begin(), activeWidgets.end(), [&](const ActiveWidgetRequest& request) {
+            return request.key == iter->first;
+        }) != activeWidgets.end();
+        if (!isStillActive) {
+            iter = m_runtimeWidgetInstances.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+
+    const float safeLeft = viewportLeft + 22.0f;
+    const float safeTop = viewportTop + 22.0f;
+    const float maxRight = viewportLeft + viewportWidth - 22.0f;
+    const float maxBottom = viewportTop + viewportHeight - 22.0f;
+    float cursorX = safeLeft;
+    float cursorY = safeTop;
+    float columnWidth = 0.0f;
+
+    for (const ActiveWidgetRequest& request : activeWidgets) {
+        RuntimeWidgetInstance* instance = nullptr;
+        auto foundInstance = m_runtimeWidgetInstances.find(request.key);
+        if (foundInstance == m_runtimeWidgetInstances.end()) {
+            RuntimeWidgetInstance loadedInstance;
+            if (LoadRuntimeWidgetInstance(request.assetPath, loadedInstance)) {
+                foundInstance = m_runtimeWidgetInstances.emplace(request.key, std::move(loadedInstance)).first;
+            }
+        }
+        if (foundInstance != m_runtimeWidgetInstances.end()) {
+            instance = &foundInstance->second;
+        }
+
+        std::error_code existsError;
+        const bool widgetAssetExists = fs::exists(request.assetPath, existsError) && !existsError;
+        if (instance == nullptr) {
+            const float fallbackW = 320.0f;
+            const float fallbackH = 88.0f;
+            if (cursorY + fallbackH > maxBottom) {
+                cursorY = safeTop;
+                cursorX += columnWidth + 20.0f;
+                columnWidth = 0.0f;
+            }
+            if (cursorX + fallbackW > maxRight) {
+                return;
+            }
+
+            const uint32_t accentColor = widgetAssetExists ? 0xFF86D7C7 : 0xFFE08A7A;
+            m_uiDrawList.AddRectFilled(cursorX, cursorY, fallbackW, fallbackH, 0xE020232A);
+            m_uiDrawList.AddRectFilled(cursorX, cursorY, fallbackW, 4.0f, accentColor);
+            m_uiDrawList.AddText(m_fontManager, fs::path(request.assetPath).stem().string(),
+                                 cursorX + 14.0f, cursorY + 24.0f, 0xFFFFFFFF, fallbackW - 28.0f);
+            m_uiDrawList.AddText(m_fontManager,
+                                 widgetAssetExists ? "Widget asset could not be parsed." : "Missing widget asset.",
+                                 cursorX + 14.0f, cursorY + 50.0f, 0xFFBEC6D0, fallbackW - 28.0f);
+            cursorY += fallbackH + 18.0f;
+            columnWidth = (std::max)(columnWidth, fallbackW);
+            continue;
+        }
+
+        float widgetContentWidth = 220.0f;
+        float widgetContentHeight = 120.0f;
+        for (const RuntimeWidgetNode& node : instance->nodes) {
+            if (!IsUIElementNodeType(node.nodeTypeId)) {
+                continue;
+            }
+            widgetContentWidth = (std::max)(widgetContentWidth, node.canvasX + node.canvasWidth + 18.0f);
+            widgetContentHeight = (std::max)(widgetContentHeight, node.canvasY + node.canvasHeight + 18.0f);
+        }
+
+        const float widgetW = widgetContentWidth + 24.0f;
+        const float widgetH = widgetContentHeight + 48.0f;
+        if (cursorY + widgetH > maxBottom) {
+            cursorY = safeTop;
+            cursorX += columnWidth + 20.0f;
+            columnWidth = 0.0f;
+        }
+        if (cursorX + widgetW > maxRight) {
+            return;
+        }
+
+        const float baseX = cursorX;
+        const float baseY = cursorY;
+        const float contentX = baseX + 12.0f;
+        const float contentY = baseY + 34.0f;
+        const std::string widgetTitle = fs::path(request.assetPath).stem().string();
+        const uint32_t panelColor = 0xD91D232A;
+        m_uiDrawList.AddRectFilled(baseX, baseY, widgetW, widgetH, panelColor);
+        m_uiDrawList.AddRectFilled(baseX, baseY, widgetW, 4.0f, 0xFF86D7C7);
+        m_uiDrawList.AddText(m_fontManager, widgetTitle, baseX + 12.0f, baseY + 20.0f, 0xFFFFFFFF, widgetW - 24.0f);
+        m_uiDrawList.AddText(m_fontManager, request.ownerName, baseX + widgetW - 136.0f, baseY + 20.0f, 0xFF9FA8B3, 124.0f);
+
+        auto GetElementRect = [&](const RuntimeWidgetNode& node, float& outX, float& outY, float& outW, float& outH) {
+            outX = contentX + node.canvasX;
+            outY = contentY + node.canvasY;
+            outW = (std::max)(20.0f, node.canvasWidth);
+            outH = (std::max)(20.0f, node.canvasHeight);
+        };
+
+        if (g_InputManager != nullptr && !m_playerMouseLookLocked) {
+            for (const RuntimeWidgetNode& node : instance->nodes) {
+                if (!IsUIButtonNodeType(node.nodeTypeId)) {
+                    continue;
+                }
+
+                float buttonX = 0.0f;
+                float buttonY = 0.0f;
+                float buttonW = 0.0f;
+                float buttonH = 0.0f;
+                GetElementRect(node, buttonX, buttonY, buttonW, buttonH);
+
+                if (g_InputManager->IsMouseButtonPressed(0) &&
+                    IsPointInRect(static_cast<float>(g_InputManager->GetMouseX()),
+                                  static_cast<float>(g_InputManager->GetMouseY()),
+                                  buttonX, buttonY, buttonW, buttonH)) {
+                    for (const RuntimeWidgetLink& link : instance->links) {
+                        if (link.fromNodeId == node.id && link.fromPinKind == "Exec" && link.toPinKind == "Exec") {
+                            ExecuteRuntimeWidgetNode(*instance, link.toNodeId);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (int drawPass = 0; drawPass < 2; ++drawPass) {
+            for (const RuntimeWidgetNode& node : instance->nodes) {
+                const bool isCanvas = IsUICanvasNodeType(node.nodeTypeId);
+                if ((drawPass == 0) != isCanvas) {
+                    continue;
+                }
+                if (!IsUIElementNodeType(node.nodeTypeId)) {
+                    continue;
+                }
+
+                float elementX = 0.0f;
+                float elementY = 0.0f;
+                float elementW = 0.0f;
+                float elementH = 0.0f;
+                GetElementRect(node, elementX, elementY, elementW, elementH);
+                const uint32_t tintColor = Float4ToUIntColor(node.tint);
+
+                if (IsUICanvasNodeType(node.nodeTypeId)) {
+                    m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
+                    m_uiDrawList.AddText(m_fontManager, node.displayText, elementX + 10.0f, elementY + 20.0f, 0xFFFFFFFF, elementW - 20.0f);
+                } else if (IsUIButtonNodeType(node.nodeTypeId)) {
+                    const bool hovered = g_InputManager != nullptr &&
+                        IsPointInRect(static_cast<float>(g_InputManager->GetMouseX()),
+                                      static_cast<float>(g_InputManager->GetMouseY()),
+                                      elementX, elementY, elementW, elementH);
+                    m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH,
+                                               hovered ? Float4ToUIntColor({(std::min)(1.0f, node.tint.x + 0.08f),
+                                                                            (std::min)(1.0f, node.tint.y + 0.08f),
+                                                                            (std::min)(1.0f, node.tint.z + 0.08f),
+                                                                            node.tint.w})
+                                                       : tintColor);
+                    m_uiDrawList.AddRectFilled(elementX, elementY, elementW, 3.0f, 0xFFFFFFFF);
+                    m_uiDrawList.AddText(m_fontManager, node.displayText,
+                                         elementX + 10.0f, elementY + elementH * 0.5f, 0xFFFFFFFF, elementW - 20.0f);
+                } else if (IsUITextBlockNodeType(node.nodeTypeId)) {
+                    m_uiDrawList.AddText(m_fontManager, node.displayText, elementX + 4.0f, elementY + 20.0f, tintColor, elementW - 8.0f);
+                } else if (IsUIImageNodeType(node.nodeTypeId)) {
+                    m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
+                    m_uiDrawList.AddText(m_fontManager, "Image", elementX + 10.0f, elementY + 20.0f, 0xFFFFFFFF, elementW - 20.0f);
+                }
+            }
+        }
+
+        cursorY += widgetH + 18.0f;
+        columnWidth = (std::max)(columnWidth, widgetW);
     }
 }
 
@@ -775,6 +1950,8 @@ void DXRenderer::ResetSceneToDefaults() {
         skybox.asset = cubeAsset;
         m_gameObjects.push_back(skybox);
     }
+
+    RefreshSceneSavedDocument();
 }
 
 void DXRenderer::ClearProjectRuntimeAssets() {
@@ -813,6 +1990,7 @@ void DXRenderer::ClearProjectRuntimeAssets() {
 
     m_materialCache.clear();
     m_textureCache.clear();
+    m_savedSceneDocument.clear();
 }
 
 void DXRenderer::QueueProjectStartupSceneLoad(const std::wstring& projectFilePath) {
@@ -972,109 +2150,27 @@ bool DXRenderer::SaveCurrentScene() {
         std::error_code ec;
         fs::create_directories(fs::path(scenePath).parent_path(), ec);
 
+        const std::vector<GameObject>& objectsToSave =
+            (m_editorUI.State.isPlaying && !m_playModeSnapshot.empty()) ? m_playModeSnapshot : m_gameObjects;
+        const std::string sceneDocument = BuildSceneDocument(objectsToSave, projectRoot);
+
         std::ofstream outFile(fs::path(scenePath), std::ios::binary | std::ios::trunc);
         if (!outFile.is_open()) {
             return false;
         }
-
-        const std::vector<GameObject>& objectsToSave =
-            (m_editorUI.State.isPlaying && !m_playModeSnapshot.empty()) ? m_playModeSnapshot : m_gameObjects;
-
-        outFile << std::fixed << std::setprecision(6);
-        outFile << "{\n";
-        outFile << "  \"type\": \"CatalystScene\",\n";
-        outFile << "  \"version\": 2,\n";
-        outFile << "  \"objects\": [\n";
-
-        for (size_t objectIndex = 0; objectIndex < objectsToSave.size(); ++objectIndex) {
-            const GameObject& object = objectsToSave[objectIndex];
-
-            const std::wstring assetSourcePath =
-                (object.asset && !object.asset->sourcePath.empty())
-                ? MakeProjectRelativePath(projectRoot, DecodeStoredPath(object.asset->sourcePath))
-                : L"";
-            const std::wstring assignedMaterialPath =
-                object.assignedMaterial ? MakeProjectRelativePath(projectRoot, GetCachedMaterialPath(object.assignedMaterial)) : L"";
-
-            outFile << "    {\n";
-            outFile << "      \"name\": \"" << EscapeJsonString(object.name) << "\",\n";
-            outFile << "      \"type\": \"" << ObjectTypeToString(object.type) << "\",\n";
-            outFile << "      \"assetId\": " << (object.asset ? object.asset->id : -1) << ",\n";
-            outFile << "      \"assetName\": \"" << EscapeJsonString(object.asset ? object.asset->name : "") << "\",\n";
-            outFile << "      \"assetSource\": \"" << EscapeJsonString(WideToUtf8(assetSourcePath)) << "\",\n";
-            outFile << "      \"position\": ";
-            WriteJsonFloat3(outFile, object.position);
-            outFile << ",\n";
-            outFile << "      \"rotation\": ";
-            WriteJsonFloat3(outFile, object.rotation);
-            outFile << ",\n";
-            outFile << "      \"scale\": ";
-            WriteJsonFloat3(outFile, object.scale);
-            outFile << ",\n";
-            outFile << "      \"color\": ";
-            WriteJsonFloat4(outFile, object.color);
-            outFile << ",\n";
-            outFile << "      \"skyHorizonColor\": ";
-            WriteJsonFloat4(outFile, object.skyHorizonColor);
-            outFile << ",\n";
-            outFile << "      \"assignedMaterial\": \"" << EscapeJsonString(WideToUtf8(assignedMaterialPath)) << "\",\n";
-            outFile << "      \"overrideTextures\": {\n";
-            outFile << "        \"albedo\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAlbedo)))) << "\",\n";
-            outFile << "        \"normal\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideNormal)))) << "\",\n";
-            outFile << "        \"metallic\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideMetallic)))) << "\",\n";
-            outFile << "        \"roughness\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideRoughness)))) << "\",\n";
-            outFile << "        \"ao\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAO)))) << "\"\n";
-            outFile << "      },\n";
-            outFile << "      \"lightIntensity\": " << object.lightIntensity << ",\n";
-            outFile << "      \"postProcess\": {\n";
-            outFile << "        \"exposure\": " << object.ppSettings.exposure << ",\n";
-            outFile << "        \"colorTint\": ";
-            WriteJsonFloat3(outFile, object.ppSettings.colorTint);
-            outFile << ",\n";
-            outFile << "        \"bloomThreshold\": " << object.ppSettings.bloomThreshold << ",\n";
-            outFile << "        \"bloomIntensity\": " << object.ppSettings.bloomIntensity << ",\n";
-            outFile << "        \"blendRadius\": " << object.ppSettings.blendRadius << "\n";
-            outFile << "      },\n";
-            outFile << "      \"physics\": {\n";
-            outFile << "        \"rigidBody\": {\n";
-            outFile << "          \"enabled\": " << (object.physics.rigidBody.enabled ? "true" : "false") << ",\n";
-            outFile << "          \"bodyType\": \"" << PhysicsBodyTypeToString(object.physics.rigidBody.bodyType) << "\",\n";
-            outFile << "          \"useGravity\": " << (object.physics.rigidBody.useGravity ? "true" : "false") << ",\n";
-            outFile << "          \"mass\": " << object.physics.rigidBody.mass << ",\n";
-            outFile << "          \"linearDamping\": " << object.physics.rigidBody.linearDamping << ",\n";
-            outFile << "          \"restitution\": " << object.physics.rigidBody.restitution << ",\n";
-            outFile << "          \"velocity\": ";
-            WriteJsonFloat3(outFile, object.physics.rigidBody.velocity);
-            outFile << "\n";
-            outFile << "        },\n";
-            outFile << "        \"collider\": {\n";
-            outFile << "          \"enabled\": " << (object.physics.collider.enabled ? "true" : "false") << ",\n";
-            outFile << "          \"shape\": \"" << PhysicsColliderShapeToString(object.physics.collider.shape) << "\",\n";
-            outFile << "          \"isTrigger\": " << (object.physics.collider.isTrigger ? "true" : "false") << ",\n";
-            outFile << "          \"centerOffset\": ";
-            WriteJsonFloat3(outFile, object.physics.collider.centerOffset);
-            outFile << ",\n";
-            outFile << "          \"boxExtents\": ";
-            WriteJsonFloat3(outFile, object.physics.collider.boxExtents);
-            outFile << ",\n";
-            outFile << "          \"sphereRadius\": " << object.physics.collider.sphereRadius << "\n";
-            outFile << "        }\n";
-            outFile << "      }\n";
-            outFile << "    " << (objectIndex + 1 < objectsToSave.size() ? "}," : "}");
-            outFile << "\n";
-        }
-
-        outFile << "  ]\n";
-        outFile << "}\n";
+        outFile << sceneDocument;
         outFile.close();
 
         m_editorUI.State.currentMapPath = scenePath;
 
         const std::wstring startupScenePath = NormalizeAssetPath(ResolveProjectStartupSceneSavePath(projectFilePath));
         if (!startupScenePath.empty() && scenePath == startupScenePath) {
-            return UpdateProjectStartupScene(projectFilePath, scenePath);
+            if (!UpdateProjectStartupScene(projectFilePath, scenePath)) {
+                return false;
+            }
         }
 
+        m_savedSceneDocument = sceneDocument;
         return true;
     } catch (const std::exception& exception) {
         DebugLog(std::string("Catalyst scene save failed: ") + exception.what());
@@ -1140,6 +2236,7 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
         const int assetId = GetJsonInt(serializedObject, "assetId", -1);
         const std::wstring assetSourcePath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assetSource"));
         sceneObject.asset = ResolveSceneAsset(assetId, GetJsonString(serializedObject, "assetName"), assetSourcePath);
+        sceneObject.blueprintAssetPath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "blueprintAsset"));
 
         const std::wstring materialPath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assignedMaterial"));
         if (!materialPath.empty()) {
@@ -1192,6 +2289,8 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
             PhysicsSystem::InitializeDefaultCollider(sceneObject, false, true);
         }
 
+        RefreshObjectBlueprintRuntime(sceneObject);
+
         m_gameObjects.push_back(sceneObject);
     }
 
@@ -1200,6 +2299,7 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
         return false;
     }
 
+    RefreshSceneSavedDocument();
     return true;
 }
 
@@ -1209,6 +2309,7 @@ bool DXRenderer::OpenActorAssetViewer(const std::wstring& path) {
     }
 
     m_engineState = EngineState::Editor;
+    CloseBlueprintAssetEditor();
     CloseMaterialAssetEditor();
 
     if (m_editorUI.State.isActorViewerLoading) {
@@ -1260,6 +2361,7 @@ bool DXRenderer::OpenMaterialAssetEditor(const std::wstring& path) {
     }
 
     m_engineState = EngineState::Editor;
+    CloseBlueprintAssetEditor();
     CloseActorAssetViewer();
 
     m_materialEditorMaterial = LoadMaterialAsset(path);
@@ -1294,8 +2396,28 @@ bool DXRenderer::OpenMaterialAssetEditor(const std::wstring& path) {
     m_editorUI.State.materialEditorAutoRotate = false;
     m_editorUI.State.currentBrowserPath = fs::path(path).parent_path().wstring();
     m_editorUI.State.currentProjectFolder = FindProjectRootFromAssetPath(path);
+    RefreshMaterialEditorSavedDocument();
     if (m_standaloneMaterialEditorWindow && m_hwnd) {
         SetWindowTextW(m_hwnd, (L"Catalyst Material Editor - " + fs::path(path).stem().wstring()).c_str());
+    }
+
+    return true;
+}
+
+bool DXRenderer::OpenBlueprintAssetEditor(const std::wstring& path) {
+    if (!m_device || path.empty()) {
+        return false;
+    }
+
+    m_engineState = EngineState::Editor;
+    CloseActorAssetViewer();
+    CloseMaterialAssetEditor();
+
+    m_editorUI.OpenBlueprintAssetEditor(path);
+    m_editorUI.State.currentBrowserPath = fs::path(path).parent_path().wstring();
+    m_editorUI.State.currentProjectFolder = FindProjectRootFromAssetPath(path);
+    if (m_standaloneBlueprintEditorWindow && m_hwnd) {
+        SetWindowTextW(m_hwnd, (L"Catalyst Blueprint Editor - " + fs::path(path).stem().wstring()).c_str());
     }
 
     return true;
@@ -1364,9 +2486,14 @@ void DXRenderer::CloseMaterialAssetEditor() {
     m_editorUI.State.materialEditorTitle.clear();
     m_editorUI.State.materialEditorIsDragging = false;
     m_materialEditorMaterial = nullptr;
+    m_savedMaterialDocument.clear();
     if (m_materialEditorPreviewAsset) {
         m_materialEditorPreviewAsset->mesh = nullptr;
     }
+}
+
+void DXRenderer::CloseBlueprintAssetEditor() {
+    m_editorUI.CloseBlueprintAssetEditor();
 }
 
 Texture* DXRenderer::LoadTextureAsset(const std::wstring& path) {
@@ -1628,43 +2755,91 @@ void DXRenderer::Render() {
 
     m_editorUI.State.mx = g_InputManager ? g_InputManager->GetMouseX() : 0;
     m_editorUI.State.my = g_InputManager ? g_InputManager->GetMouseY() : 0;
+    bool sceneMouseInViewport = false;
+    if (m_showClosePrompt) {
+        const float popupW = std::clamp(w * 0.34f, 460.0f, 580.0f);
+        const float popupH = m_closePromptError.empty() ? 250.0f : 290.0f;
+        const float popupX = (w - popupW) * 0.5f;
+        const float popupY = (h - popupH) * 0.5f;
+        m_uiContext.SetModalRegion(popupX, popupY, popupW, popupH);
+    } else {
+        m_uiContext.ClearModalRegion();
+    }
 
-    // 1. Process Logic Data
+    
     if (m_engineState == EngineState::Launcher) {
         m_editorUI.DrawLauncher(this, w, h);
     } else if (m_engineState == EngineState::ProjectLoading) {
         m_editorUI.DrawProjectLoading(this, w, h);
     } else {
         m_editorUI.DrawEditor(this, w, h, topH, rightW, bottomH);
-        if (!m_editorUI.State.showActorAssetViewer && !m_editorUI.State.showMaterialAssetViewer) {
-            bool mouseInViewport =
+        if (!m_editorUI.State.showActorAssetViewer &&
+            !m_editorUI.State.showMaterialAssetViewer &&
+            !m_editorUI.IsBlueprintEditorOpen() &&
+            !m_showClosePrompt) {
+            const bool playCameraOwnsView =
+                m_editorUI.State.isPlaying &&
+                std::any_of(m_gameObjects.begin(), m_gameObjects.end(), [](const GameObject& object) {
+                    return object.blueprintPlayerControlled || object.blueprintPossessCamera;
+                });
+            sceneMouseInViewport =
                 m_editorUI.State.mx >= 0 && m_editorUI.State.mx <= viewW &&
                 m_editorUI.State.my >= topH && m_editorUI.State.my <= topH + viewH;
             m_camera.SetProjection(45.0f, viewW / viewH, 0.1f, 5000.0f);
-            m_camera.Update(deltaTime, mouseInViewport);
-            m_editorUI.ProcessDragAndDrop(this, w, h, topH, viewW, viewH);
+            if (!playCameraOwnsView) {
+                m_camera.Update(deltaTime, sceneMouseInViewport);
+            }
+            if (!m_editorUI.State.isPlaying) {
+                m_editorUI.ProcessDragAndDrop(this, w, h, topH, viewW, viewH);
+            }
         }
     }
+
+    if (m_showClosePrompt) {
+        DrawClosePrompt(w, h);
+    }
+    m_uiContext.ClearModalRegion();
 
     const bool canSimulateScenePhysics =
         m_engineState == EngineState::Editor &&
         !m_editorUI.State.showActorAssetViewer &&
-        !m_editorUI.State.showMaterialAssetViewer;
+        !m_editorUI.State.showMaterialAssetViewer &&
+        !m_editorUI.IsBlueprintEditorOpen();
 
     if (canSimulateScenePhysics) {
         if (m_editorUI.State.isPlaying && !m_lastPlayMode) {
             m_playModeSnapshot = m_gameObjects;
+            RefreshSceneBlueprintRuntime();
+            m_runtimeWidgetInstances.clear();
             m_physicsSystem.Reset();
+            m_jumpKeyWasDown = false;
+            m_escapeKeyWasDown = false;
+            m_playerMouseLookSuppressed = false;
+            m_playerControllerPitch = 0.0f;
+            m_playerControllerYaw = 0.0f;
+            SetPlayerMouseLookLocked(false);
+            for (const GameObject& object : m_gameObjects) {
+                if (object.blueprintPlayerControlled) {
+                    m_playerControllerYaw = object.rotation.y;
+                    break;
+                }
+            }
         } else if (!m_editorUI.State.isPlaying && m_lastPlayMode) {
             if (!m_playModeSnapshot.empty()) {
                 m_gameObjects = m_playModeSnapshot;
             }
             m_playModeSnapshot.clear();
+            m_runtimeWidgetInstances.clear();
             m_physicsSystem.Reset();
+            m_jumpKeyWasDown = false;
+            m_escapeKeyWasDown = false;
+            m_playerMouseLookSuppressed = false;
+            SetPlayerMouseLookLocked(false);
         }
 
         m_lastPlayMode = m_editorUI.State.isPlaying;
         if (m_editorUI.State.isPlaying) {
+            ApplyBlueprintGameplayNodes(deltaTime, topH, viewW, viewH, sceneMouseInViewport);
             m_physicsSystem.Step(m_gameObjects, deltaTime);
         }
     } else if (m_lastPlayMode) {
@@ -1674,10 +2849,14 @@ void DXRenderer::Render() {
         m_editorUI.State.isPlaying = false;
         m_lastPlayMode = false;
         m_playModeSnapshot.clear();
+        m_runtimeWidgetInstances.clear();
         m_physicsSystem.Reset();
+        m_jumpKeyWasDown = false;
+        m_escapeKeyWasDown = false;
+        m_playerMouseLookSuppressed = false;
+        SetPlayerMouseLookLocked(false);
     }
 
-    // 2. Set Render Targets & Bindless Heaps *BEFORE* 3D Drawing!
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += m_frameIndex * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1691,22 +2870,21 @@ void DXRenderer::Render() {
 
     const bool showActorAssetViewer = m_editorUI.State.showActorAssetViewer && m_actorViewerAsset && m_actorViewerAsset->mesh;
     const bool showMaterialAssetViewer = m_editorUI.State.showMaterialAssetViewer && m_materialEditorPreviewAsset && m_materialEditorPreviewAsset->mesh;
+    const bool showBlueprintEditor = m_editorUI.IsBlueprintEditorOpen();
     const float clearColor[] = {
-        (showActorAssetViewer || showMaterialAssetViewer) ? 0.075f : 0.05f,
-        (showActorAssetViewer || showMaterialAssetViewer) ? 0.082f : 0.05f,
-        (showActorAssetViewer || showMaterialAssetViewer) ? 0.095f : 0.05f,
+        (showActorAssetViewer || showMaterialAssetViewer || showBlueprintEditor) ? 0.075f : 0.05f,
+        (showActorAssetViewer || showMaterialAssetViewer || showBlueprintEditor) ? 0.082f : 0.05f,
+        (showActorAssetViewer || showMaterialAssetViewer || showBlueprintEditor) ? 0.095f : 0.05f,
         1.0f
     };
     m_commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
     m_commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     m_commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // FIX: Bind the heap BEFORE any Draw calls happen!
     ID3D12DescriptorHeap* heaps[] = { m_bindlessManager.GetHeap() }; 
     m_commandList->SetDescriptorHeaps(1, heaps);
 
-    // 3. Draw 3D Scene
-    if (m_engineState == EngineState::Editor) {
+    if (m_engineState == EngineState::Editor && !showBlueprintEditor) {
         if (showMaterialAssetViewer) {
             Mesh* previewMesh = m_materialEditorPreviewAsset->mesh;
             const DirectX::BoundingBox& bounds = previewMesh->GetBounds();
@@ -1866,7 +3044,13 @@ void DXRenderer::Render() {
                 }
             }
 
-            if (g_InputManager->IsMouseButtonPressed(0) && !m_editorUI.State.showPlaceActorsMenu && !m_editorUI.State.showImportPopup && !m_editorUI.State.showRenamePopup && !m_editorUI.State.showContextMenu && m_editorUI.State.draggedAssetIndex == -1) {
+            if (!m_editorUI.State.isPlaying &&
+                g_InputManager->IsMouseButtonPressed(0) &&
+                !m_editorUI.State.showPlaceActorsMenu &&
+                !m_editorUI.State.showImportPopup &&
+                !m_editorUI.State.showRenamePopup &&
+                !m_editorUI.State.showContextMenu &&
+                m_editorUI.State.draggedAssetIndex == -1) {
                 if (m_editorUI.State.mx >= 0 && m_editorUI.State.mx <= viewW && m_editorUI.State.my >= topH && m_editorUI.State.my <= topH + viewH) {
                     if (!isGizmoHovered) {
                         m_editorUI.State.selectedObj = RaycastViewportObject(m_editorUI.State.mx, m_editorUI.State.my, topH, viewW, viewH);
@@ -1903,16 +3087,23 @@ void DXRenderer::Render() {
         }
     }
 
-    // 4. Draw 2D UI Overlay
     D3D12_VIEWPORT fullViewport = { 0.0f, 0.0f, w, h, 0.0f, 1.0f };
     D3D12_RECT fullScissor = { 0, 0, (LONG)w, (LONG)h };
     m_commandList->RSSetViewports(1, &fullViewport);
     m_commandList->RSSetScissorRects(1, &fullScissor);
 
+    if (m_engineState == EngineState::Editor &&
+        m_editorUI.State.isPlaying &&
+        !showActorAssetViewer &&
+        !showMaterialAssetViewer &&
+        !showBlueprintEditor) {
+        DrawRuntimeBlueprintWidgets(0.0f, topH, viewW, viewH);
+    }
+
     m_uiRenderer.Render(m_commandList.Get(), m_uiDrawList, w, h, m_bindlessManager.GetHeap());
     m_uiDrawList.Clear();
 
-    // 5. Present
+   
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     m_commandList->ResourceBarrier(1, &barrier);
@@ -1986,6 +3177,7 @@ void DXRenderer::FlushGPU() {
 
 void DXRenderer::Shutdown() { 
     FlushGPU(); 
+    SetPlayerMouseLookLocked(false);
     m_uiRenderer.Shutdown();
     CloseActorAssetViewer();
     CloseMaterialAssetEditor();
