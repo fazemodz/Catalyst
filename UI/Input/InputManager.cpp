@@ -5,7 +5,11 @@ void InputManager::Update() {
         m_mousePressed[i] = m_mouseDown[i] && !m_mousePrevDown[i];
         m_mousePrevDown[i] = m_mouseDown[i];
     }
-    m_typedChars.clear(); // Clear typed characters every frame so they don't repeat
+}
+
+void InputManager::EndFrame() {
+    m_mouseWheelDelta = 0;
+    m_typedChars.clear();
 }
 
 void InputManager::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -20,6 +24,9 @@ void InputManager::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_RBUTTONUP:   m_mouseDown[1] = false; break;
     case WM_MBUTTONDOWN: m_mouseDown[2] = true; break;
     case WM_MBUTTONUP:   m_mouseDown[2] = false; break;
+    case WM_MOUSEWHEEL:
+        m_mouseWheelDelta += GET_WHEEL_DELTA_WPARAM(wParam);
+        break;
     case WM_CHAR:
         // Capture keyboard typing, including Backspace (0x08)
         if (wParam > 0 && wParam < 0x10000) {

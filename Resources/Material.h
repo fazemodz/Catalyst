@@ -1,34 +1,25 @@
 #pragma once
+#include <filesystem>
 #include <string>
-#include <vector>
-#include <unordered_map>
-#include <DirectXMath.h>
-#include "RenderTypes.h"
 
-enum class PropertyType { Float, Vector4, Texture };
-
-struct MaterialProperty {
-    PropertyType type;
-    std::string name;
-    float floatVal;
-    DirectX::XMFLOAT4 vec4Val;
-    int textureIndex; 
-};
+class Texture;
 
 class Material {
 public:
     std::string name;
-    std::unordered_map<std::string, MaterialProperty> properties;
+    std::wstring sourcePath;
+    std::filesystem::file_time_type lastWriteTime{};
 
-    void SetFloat(const std::string& name, float val) {
-        properties[name] = { PropertyType::Float, name, val, {0,0,0,0}, -1 };
-    }
+    std::string albedoPath;
+    std::string normalPath;
+    std::string roughnessPath;
 
-    void SetVector(const std::string& name, DirectX::XMFLOAT4 val) {
-        properties[name] = { PropertyType::Vector4, name, 0, val, -1 };
-    }
+    Texture* albedoTexture = nullptr;
+    Texture* normalTexture = nullptr;
+    Texture* roughnessTexture = nullptr;
 
-    void SetTexture(const std::string& name, int index) {
-        properties[name] = { PropertyType::Texture, name, 0, {0,0,0,0}, index };
-    }
+    bool LoadFromFile(const std::wstring& filepath);
+    bool SaveToFile(const std::wstring& filepath) const;
+
+    std::wstring ResolveLinkedTexturePath(const std::string& linkedPath) const;
 };

@@ -139,6 +139,8 @@
     <ClInclude Include="EngineApp.h" />
     <ClInclude Include="Error Handler\Common.h" />
     <ClInclude Include="Launcher.h" />
+    <ClInclude Include="Physics\PhysicsSystem.h" />
+    <ClInclude Include="Physics\PhysicsTypes.h" />
     <ClInclude Include="Lib\imgui\ImGuizmo.h" />
     <ClInclude Include="Resources\Material.h" />
     <ClInclude Include="Resources\Mesh.h" />
@@ -148,6 +150,8 @@
     <ClInclude Include="Scene\Asset.h" />
     <ClInclude Include="Scene\Camera.h" />
     <ClInclude Include="Scene\GameObject.h" />
+    <ClInclude Include="UI\EditorUI.h" />
+    <ClInclude Include="UI\EditorUIInternal.h" />
     <ClInclude Include="UI\Input\InputManager.h" />
     <ClInclude Include="UI\Render\FontManager.h" />
     <ClInclude Include="UI\Render\UIDrawList.h" />
@@ -248,6 +252,8 @@
     <ClCompile Include="Lib/imgui/imgui_widgets.cpp" />
     <ClCompile Include="Lib/imgui/backends\imgui_impl_dx12.cpp" />
     <ClCompile Include="Lib/imgui/backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="Physics\PhysicsSystem.cpp" />
+    <ClCompile Include="Physics\PhysicsTypes.cpp" />
     <ClCompile Include="Core Render\DXRenderer.cpp" />
     <ClCompile Include="EngineApp.cpp" />
     <ClCompile Include="Error Handler\Common.cpp" />
@@ -356,6 +362,11 @@
     <None Include="Shaders\UI.hlsl">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <ClCompile Include="UI\EditorUI.cpp" />
+    <ClCompile Include="UI\EditorUIEditor.cpp" />
+    <ClCompile Include="UI\EditorUILauncher.cpp" />
+    <ClCompile Include="UI\EditorUIDragDrop.cpp" />
+    <ClCompile Include="UI\EditorUIViewers.cpp" />
     <ClCompile Include="UI\Input\InputManager.cpp">
       <RuntimeLibrary>MultiThreadedDebugDll</RuntimeLibrary>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>

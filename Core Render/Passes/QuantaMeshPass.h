@@ -22,9 +22,6 @@ public:
                 Texture* texWhite, Texture* texNormal, Texture* texBlack, ID3D12DescriptorHeap* shadowSrvHeap,
                 Mesh* defaultSphereMesh); 
 
-    ID3D12RootSignature* GetPreviewRootSignature() { return m_previewRootSignature.Get(); }
-    ID3D12PipelineState* GetPreviewPipelineState() { return m_previewPipelineState.Get(); }
-
 private:
     ComPtr<ID3D12RootSignature> m_computeRootSignature;
     ComPtr<ID3D12PipelineState> m_computePipelineState;
@@ -41,11 +38,7 @@ private:
     ComPtr<ID3D12Resource> m_commandBuffer;
     ComPtr<ID3D12Resource> m_counterBuffer;
     ComPtr<ID3D12Resource> m_zeroBuffer;
-
-    ComPtr<ID3D12RootSignature> m_previewRootSignature;
-    ComPtr<ID3D12PipelineState> m_previewPipelineState; 
-    ComPtr<ID3D12RootSignature> m_skyboxRootSignature;
-    ComPtr<ID3D12PipelineState> m_skyboxPipelineState;
+    bool m_indirectBuffersInitialized = false;
 
     void CreatePipelines(ID3D12Device* device);
     void CreateComputeBuffers(ID3D12Device* device);

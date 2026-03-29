@@ -2,27 +2,1489 @@
 #include <d3dcompiler.h>
 #include <iostream>
 #include <DirectXCollision.h> 
-#include <cmath>
-#include <string>
 #include <algorithm>
-#include <vector>
+#include <cfloat>
+#include <cwctype>
+#include <cmath>
+#include <cctype>
+#include <iomanip>
 #include <filesystem>
-#include <windows.h>
+#include <fstream>
+#include <sstream>
+#include <thread>
+#include <vector>
 #include "PrimitiveGenerator.h"
+#include "ModelLoader.h"
+#include "../Launcher.h" 
 
 using namespace DirectX;
+namespace fs = std::filesystem;
+
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 
 extern InputManager* g_InputManager;
+static uint32_t g_skyboxSrvIndex = static_cast<uint32_t>(-1); 
 
-// Global ID cache for the Skybox SRV in the Bindless Heap
-static uint32_t g_skyboxSrvIndex = 0; 
+namespace {
+std::wstring NormalizeAssetPath(const std::wstring& path) {
+    if (path.empty()) {
+        return L"";
+    }
+
+    std::error_code ec;
+    fs::path absolutePath = fs::absolute(fs::path(path), ec);
+    if (ec) {
+        absolutePath = fs::path(path);
+    }
+
+    fs::path normalized = absolutePath.lexically_normal();
+    return normalized.wstring();
+}
+
+std::wstring FindProjectRootFromAssetPath(const std::wstring& assetPath) {
+    fs::path current = fs::path(assetPath).parent_path();
+    while (!current.empty()) {
+        std::wstring folderName = current.filename().wstring();
+        std::transform(folderName.begin(), folderName.end(), folderName.begin(), towlower);
+        if (folderName == L"assets") {
+            return current.parent_path().wstring();
+        }
+
+        fs::path parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = parent;
+    }
+
+    return fs::path(assetPath).parent_path().wstring();
+}
+
+bool RayIntersectsSphere(const XMFLOAT3& origin, const XMFLOAT3& direction,
+                         const XMFLOAT3& center, float radius, float& outDistance) {
+    const XMVECTOR rayOrigin = XMLoadFloat3(&origin);
+    const XMVECTOR rayDirection = XMLoadFloat3(&direction);
+    const XMVECTOR sphereCenter = XMLoadFloat3(&center);
+
+    const XMVECTOR oc = XMVectorSubtract(rayOrigin, sphereCenter);
+    const float b = 2.0f * XMVectorGetX(XMVector3Dot(oc, rayDirection));
+    const float c = XMVectorGetX(XMVector3Dot(oc, oc)) - radius * radius;
+    const float discriminant = b * b - 4.0f * c;
+    if (discriminant < 0.0f) {
+        return false;
+    }
+
+    const float sqrtDisc = sqrtf(discriminant);
+    const float t0 = (-b - sqrtDisc) * 0.5f;
+    const float t1 = (-b + sqrtDisc) * 0.5f;
+    const float hitDistance = (t0 > 0.0f) ? t0 : t1;
+    if (hitDistance <= 0.0f) {
+        return false;
+    }
+
+    outDistance = hitDistance;
+    return true;
+}
+
+MeshData ParseActorAssetForPreview(const std::wstring& filepath) {
+    try {
+        return ModelLoader::LoadMeshData(filepath);
+    } catch (...) {
+        return {};
+    }
+}
+
+float ComputePreviewRadius(const DirectX::XMFLOAT3& extents) {
+    return (std::max)(0.35f, sqrtf(extents.x * extents.x + extents.y * extents.y + extents.z * extents.z));
+}
+
+std::string WideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return "";
+    }
+
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 1) {
+        return "";
+    }
+
+    std::string converted(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, converted.data(), size, nullptr, nullptr);
+    converted.pop_back();
+    return converted;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+    if (value.empty()) {
+        return L"";
+    }
+
+    const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+    if (size <= 1) {
+        return L"";
+    }
+
+    std::wstring converted(static_cast<size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, converted.data(), size);
+    converted.pop_back();
+    return converted;
+}
+
+std::wstring DecodeStoredPath(const std::string& value) {
+    std::wstring converted = Utf8ToWide(value);
+    if (converted.empty() && !value.empty()) {
+        converted.assign(value.begin(), value.end());
+    }
+    return converted;
+}
+
+std::string EscapeJsonString(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+
+    for (char ch : value) {
+        switch (ch) {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped += ch;
+            break;
+        }
+    }
+
+    return escaped;
+}
+
+void DebugLog(const std::string& message) {
+    OutputDebugStringA((message + "\n").c_str());
+}
+
+std::wstring MakeProjectRelativePath(const std::wstring& projectRoot, const std::wstring& path) {
+    if (path.empty()) {
+        return L"";
+    }
+
+    std::error_code ec;
+    fs::path absolutePath = fs::path(path);
+    if (!absolutePath.is_absolute()) {
+        absolutePath = fs::absolute(absolutePath, ec);
+        if (ec) {
+            absolutePath = fs::path(path);
+        }
+    }
+
+    if (projectRoot.empty()) {
+        return absolutePath.lexically_normal().generic_wstring();
+    }
+
+    fs::path relativePath = fs::relative(absolutePath, fs::path(projectRoot), ec);
+    return (ec ? absolutePath.lexically_normal() : relativePath.lexically_normal()).generic_wstring();
+}
+
+std::wstring ResolveSceneReferencePath(const std::wstring& projectRoot, const std::string& storedPath) {
+    if (storedPath.empty()) {
+        return L"";
+    }
+
+    fs::path resolved(DecodeStoredPath(storedPath));
+    if (!resolved.is_absolute() && !projectRoot.empty()) {
+        resolved = fs::path(projectRoot) / resolved;
+    }
+
+    return resolved.lexically_normal().wstring();
+}
+
+const char* ObjectTypeToString(ObjectType type) {
+    switch (type) {
+    case ObjectType::Light:
+        return "Light";
+    case ObjectType::Skybox:
+        return "Skybox";
+    case ObjectType::PostProcessVolume:
+        return "PostProcessVolume";
+    case ObjectType::Mesh:
+    default:
+        return "Mesh";
+    }
+}
+
+ObjectType ObjectTypeFromString(const std::string& type) {
+    if (type == "Light") {
+        return ObjectType::Light;
+    }
+    if (type == "Skybox") {
+        return ObjectType::Skybox;
+    }
+    if (type == "PostProcessVolume") {
+        return ObjectType::PostProcessVolume;
+    }
+    return ObjectType::Mesh;
+}
+
+enum class JsonValueType {
+    Null,
+    Number,
+    String,
+    Bool,
+    Array,
+    Object
+};
+
+struct JsonValue {
+    JsonValueType type = JsonValueType::Null;
+    double numberValue = 0.0;
+    bool boolValue = false;
+    std::string stringValue;
+    std::vector<JsonValue> arrayValue;
+    std::map<std::string, JsonValue> objectValue;
+};
+
+class JsonParser {
+public:
+    explicit JsonParser(const std::string& text)
+        : m_text(text) {
+    }
+
+    bool Parse(JsonValue& outValue) {
+        SkipWhitespace();
+        if (!ParseValue(outValue)) {
+            return false;
+        }
+
+        SkipWhitespace();
+        return m_pos == m_text.size();
+    }
+
+private:
+    bool ParseValue(JsonValue& outValue) {
+        SkipWhitespace();
+        if (m_pos >= m_text.size()) {
+            return false;
+        }
+
+        const char current = m_text[m_pos];
+        if (current == '{') {
+            return ParseObject(outValue);
+        }
+        if (current == '[') {
+            return ParseArray(outValue);
+        }
+        if (current == '"') {
+            outValue.type = JsonValueType::String;
+            return ParseString(outValue.stringValue);
+        }
+        if (current == '-' || (current >= '0' && current <= '9')) {
+            outValue.type = JsonValueType::Number;
+            return ParseNumber(outValue.numberValue);
+        }
+        if (ConsumeLiteral("true")) {
+            outValue.type = JsonValueType::Bool;
+            outValue.boolValue = true;
+            return true;
+        }
+        if (ConsumeLiteral("false")) {
+            outValue.type = JsonValueType::Bool;
+            outValue.boolValue = false;
+            return true;
+        }
+        if (ConsumeLiteral("null")) {
+            outValue.type = JsonValueType::Null;
+            return true;
+        }
+
+        return false;
+    }
+
+    bool ParseObject(JsonValue& outValue) {
+        if (!Match('{')) {
+            return false;
+        }
+
+        outValue.type = JsonValueType::Object;
+        outValue.objectValue.clear();
+        SkipWhitespace();
+
+        if (Match('}')) {
+            return true;
+        }
+
+        while (m_pos < m_text.size()) {
+            std::string key;
+            if (!ParseString(key)) {
+                return false;
+            }
+
+            SkipWhitespace();
+            if (!Match(':')) {
+                return false;
+            }
+
+            JsonValue child;
+            if (!ParseValue(child)) {
+                return false;
+            }
+            outValue.objectValue[key] = child;
+
+            SkipWhitespace();
+            if (Match('}')) {
+                return true;
+            }
+            if (!Match(',')) {
+                return false;
+            }
+            SkipWhitespace();
+        }
+
+        return false;
+    }
+
+    bool ParseArray(JsonValue& outValue) {
+        if (!Match('[')) {
+            return false;
+        }
+
+        outValue.type = JsonValueType::Array;
+        outValue.arrayValue.clear();
+        SkipWhitespace();
+
+        if (Match(']')) {
+            return true;
+        }
+
+        while (m_pos < m_text.size()) {
+            JsonValue child;
+            if (!ParseValue(child)) {
+                return false;
+            }
+            outValue.arrayValue.push_back(child);
+
+            SkipWhitespace();
+            if (Match(']')) {
+                return true;
+            }
+            if (!Match(',')) {
+                return false;
+            }
+            SkipWhitespace();
+        }
+
+        return false;
+    }
+
+    bool ParseString(std::string& outValue) {
+        if (!Match('"')) {
+            return false;
+        }
+
+        outValue.clear();
+        while (m_pos < m_text.size()) {
+            const char current = m_text[m_pos++];
+            if (current == '"') {
+                return true;
+            }
+
+            if (current != '\\') {
+                outValue += current;
+                continue;
+            }
+
+            if (m_pos >= m_text.size()) {
+                return false;
+            }
+
+            const char escaped = m_text[m_pos++];
+            switch (escaped) {
+            case '"':
+            case '\\':
+            case '/':
+                outValue += escaped;
+                break;
+            case 'b':
+                outValue += '\b';
+                break;
+            case 'f':
+                outValue += '\f';
+                break;
+            case 'n':
+                outValue += '\n';
+                break;
+            case 'r':
+                outValue += '\r';
+                break;
+            case 't':
+                outValue += '\t';
+                break;
+            default:
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    bool ParseNumber(double& outValue) {
+        const size_t start = m_pos;
+        if (m_text[m_pos] == '-') {
+            ++m_pos;
+        }
+
+        while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
+            ++m_pos;
+        }
+
+        if (m_pos < m_text.size() && m_text[m_pos] == '.') {
+            ++m_pos;
+            while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
+                ++m_pos;
+            }
+        }
+
+        if (m_pos < m_text.size() && (m_text[m_pos] == 'e' || m_text[m_pos] == 'E')) {
+            ++m_pos;
+            if (m_pos < m_text.size() && (m_text[m_pos] == '+' || m_text[m_pos] == '-')) {
+                ++m_pos;
+            }
+            while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
+                ++m_pos;
+            }
+        }
+
+        try {
+            outValue = std::stod(m_text.substr(start, m_pos - start));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void SkipWhitespace() {
+        while (m_pos < m_text.size() && std::isspace(static_cast<unsigned char>(m_text[m_pos])) != 0) {
+            ++m_pos;
+        }
+    }
+
+    bool Match(char expected) {
+        if (m_pos < m_text.size() && m_text[m_pos] == expected) {
+            ++m_pos;
+            return true;
+        }
+        return false;
+    }
+
+    bool ConsumeLiteral(const char* literal) {
+        const size_t literalLength = std::char_traits<char>::length(literal);
+        if (m_pos + literalLength > m_text.size()) {
+            return false;
+        }
+        if (m_text.compare(m_pos, literalLength, literal) != 0) {
+            return false;
+        }
+        m_pos += literalLength;
+        return true;
+    }
+
+    const std::string& m_text;
+    size_t m_pos = 0;
+};
+
+const JsonValue* FindJsonField(const JsonValue& objectValue, const char* key) {
+    if (objectValue.type != JsonValueType::Object) {
+        return nullptr;
+    }
+
+    auto found = objectValue.objectValue.find(key);
+    return found != objectValue.objectValue.end() ? &found->second : nullptr;
+}
+
+std::string GetJsonString(const JsonValue& objectValue, const char* key, const std::string& fallback = "") {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    return (field && field->type == JsonValueType::String) ? field->stringValue : fallback;
+}
+
+float GetJsonNumber(const JsonValue& objectValue, const char* key, float fallback) {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    return (field && field->type == JsonValueType::Number) ? static_cast<float>(field->numberValue) : fallback;
+}
+
+int GetJsonInt(const JsonValue& objectValue, const char* key, int fallback) {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    return (field && field->type == JsonValueType::Number) ? static_cast<int>(field->numberValue) : fallback;
+}
+
+bool GetJsonBool(const JsonValue& objectValue, const char* key, bool fallback) {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    return (field && field->type == JsonValueType::Bool) ? field->boolValue : fallback;
+}
+
+DirectX::XMFLOAT3 GetJsonFloat3(const JsonValue& objectValue, const char* key, const DirectX::XMFLOAT3& fallback) {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    if (!field || field->type != JsonValueType::Array || field->arrayValue.size() != 3) {
+        return fallback;
+    }
+
+    for (const JsonValue& component : field->arrayValue) {
+        if (component.type != JsonValueType::Number) {
+            return fallback;
+        }
+    }
+
+    return {
+        static_cast<float>(field->arrayValue[0].numberValue),
+        static_cast<float>(field->arrayValue[1].numberValue),
+        static_cast<float>(field->arrayValue[2].numberValue)
+    };
+}
+
+DirectX::XMFLOAT4 GetJsonFloat4(const JsonValue& objectValue, const char* key, const DirectX::XMFLOAT4& fallback) {
+    const JsonValue* field = FindJsonField(objectValue, key);
+    if (!field || field->type != JsonValueType::Array || field->arrayValue.size() != 4) {
+        return fallback;
+    }
+
+    for (const JsonValue& component : field->arrayValue) {
+        if (component.type != JsonValueType::Number) {
+            return fallback;
+        }
+    }
+
+    return {
+        static_cast<float>(field->arrayValue[0].numberValue),
+        static_cast<float>(field->arrayValue[1].numberValue),
+        static_cast<float>(field->arrayValue[2].numberValue),
+        static_cast<float>(field->arrayValue[3].numberValue)
+    };
+}
+
+void WriteJsonFloat3(std::ostream& outStream, const DirectX::XMFLOAT3& value) {
+    outStream << "[" << value.x << ", " << value.y << ", " << value.z << "]";
+}
+
+void WriteJsonFloat4(std::ostream& outStream, const DirectX::XMFLOAT4& value) {
+    outStream << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
+}
+}
+
+std::vector<ProjectInfo> DXRenderer::GetRecentProjectsInfo() {
+    return ::GetRecentProjectsInfo();
+}
+
+int DXRenderer::GetNextAvailableAssetId() const {
+    int maxAssetId = -1;
+    for (const auto& asset : m_assets) {
+        if (asset) {
+            maxAssetId = (std::max)(maxAssetId, asset->id);
+        }
+    }
+    return maxAssetId + 1;
+}
+
+std::wstring DXRenderer::ResolveActiveProjectFilePath() const {
+    if (!m_editorUI.State.currentProjectFile.empty()) {
+        return NormalizeAssetPath(m_editorUI.State.currentProjectFile);
+    }
+
+    if (m_editorUI.State.currentProjectFolder.empty() || !fs::exists(m_editorUI.State.currentProjectFolder)) {
+        return L"";
+    }
+
+    for (const auto& entry : fs::directory_iterator(m_editorUI.State.currentProjectFolder)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        std::wstring extension = entry.path().extension().wstring();
+        std::transform(extension.begin(), extension.end(), extension.begin(), towlower);
+        if (extension == L".catalystproj") {
+            return entry.path().lexically_normal().wstring();
+        }
+    }
+
+    return L"";
+}
+
+std::wstring DXRenderer::ResolveActiveProjectDisplayName() const {
+    if (!m_editorUI.State.editorSwapProjName.empty()) {
+        return m_editorUI.State.editorSwapProjName;
+    }
+
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (!projectFilePath.empty()) {
+        return fs::path(projectFilePath).stem().wstring();
+    }
+
+    return L"Untitled Project";
+}
+
+std::wstring DXRenderer::ResolveActiveMapDisplayName() const {
+    if (!m_editorUI.State.currentMapPath.empty()) {
+        return fs::path(m_editorUI.State.currentMapPath).stem().wstring();
+    }
+
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (!projectFilePath.empty()) {
+        const std::wstring startupScenePath = ResolveProjectStartupScenePath(projectFilePath);
+        if (!startupScenePath.empty()) {
+            return fs::path(startupScenePath).stem().wstring();
+        }
+    }
+
+    return L"Untitled Map";
+}
+
+void DXRenderer::RefreshWindowTitle() {
+    if (m_hwnd == nullptr || m_standaloneActorViewerWindow || m_standaloneMaterialEditorWindow) {
+        return;
+    }
+
+    std::wstring title;
+    if (m_engineState == EngineState::ProjectLoading) {
+        title = L"Catalyst Loading - " + ResolveActiveProjectDisplayName();
+    } else if (m_engineState == EngineState::Editor) {
+        title = L"Catalyst Editor - " + ResolveActiveProjectDisplayName() + L" (" + ResolveActiveMapDisplayName() + L")";
+    } else {
+        title = L"Catalyst Launcher";
+    }
+
+    if (title != m_lastWindowTitle) {
+        SetWindowTextW(m_hwnd, title.c_str());
+        m_lastWindowTitle = title;
+    }
+}
+
+Asset* DXRenderer::FindAssetById(int assetId) const {
+    for (const auto& asset : m_assets) {
+        if (asset && asset->id == assetId) {
+            return asset.get();
+        }
+    }
+    return nullptr;
+}
+
+Asset* DXRenderer::FindAssetBySourcePath(const std::wstring& sourcePath) const {
+    const std::wstring normalizedPath = NormalizeAssetPath(sourcePath);
+    if (normalizedPath.empty()) {
+        return nullptr;
+    }
+
+    for (const auto& asset : m_assets) {
+        if (!asset || asset->sourcePath.empty()) {
+            continue;
+        }
+
+        const std::wstring candidatePath = NormalizeAssetPath(DecodeStoredPath(asset->sourcePath));
+        if (!candidatePath.empty() && candidatePath == normalizedPath) {
+            return asset.get();
+        }
+    }
+
+    return nullptr;
+}
+
+Material* DXRenderer::FindMaterialByPath(const std::wstring& materialPath) const {
+    const std::wstring normalizedPath = NormalizeAssetPath(materialPath);
+    if (normalizedPath.empty()) {
+        return nullptr;
+    }
+
+    auto found = m_materialCache.find(normalizedPath);
+    return found != m_materialCache.end() ? found->second.get() : nullptr;
+}
+
+Texture* DXRenderer::FindTextureByPath(const std::wstring& texturePath) const {
+    const std::wstring normalizedPath = NormalizeAssetPath(texturePath);
+    if (normalizedPath.empty()) {
+        return nullptr;
+    }
+
+    auto found = m_textureCache.find(normalizedPath);
+    return found != m_textureCache.end() ? found->second.get() : nullptr;
+}
+
+std::wstring DXRenderer::GetCachedMaterialPath(const Material* material) const {
+    if (!material) {
+        return L"";
+    }
+
+    for (const auto& cachedMaterial : m_materialCache) {
+        if (cachedMaterial.second.get() == material) {
+            return cachedMaterial.first;
+        }
+    }
+
+    return material->sourcePath;
+}
+
+std::wstring DXRenderer::GetCachedTexturePath(const Texture* texture) const {
+    if (!texture) {
+        return L"";
+    }
+
+    for (const auto& cachedTexture : m_textureCache) {
+        if (cachedTexture.second.get() == texture) {
+            return cachedTexture.first;
+        }
+    }
+
+    return L"";
+}
+
+void DXRenderer::ResetSceneToDefaults() {
+    m_gameObjects.clear();
+    m_editorUI.State.selectedObj = -1;
+    m_editorUI.State.selectedContentAsset = -1;
+    m_editorUI.State.playYOffset = 0.0f;
+    m_editorUI.State.isPlaying = false;
+    m_lastPlayMode = false;
+    m_playModeSnapshot.clear();
+    m_physicsSystem.Reset();
+
+    Asset* planeAsset = FindAssetById(2);
+    if (planeAsset) {
+        GameObject floor;
+        floor.name = "Floor";
+        floor.position = {0.0f, -3.0f, 15.0f};
+        floor.scale = {10.0f, 1.0f, 10.0f};
+        floor.color = {0.3f, 0.3f, 0.3f, 1.0f};
+        floor.asset = planeAsset;
+        PhysicsSystem::InitializeDefaultCollider(floor, false, true);
+        m_gameObjects.push_back(floor);
+    }
+
+    Asset* cubeAsset = FindAssetById(0);
+    if (cubeAsset) {
+        GameObject skybox;
+        skybox.name = "Sky Atmosphere";
+        skybox.position = {0.0f, -9999.0f, 0.0f};
+        skybox.scale = {1.0f, 1.0f, 1.0f};
+        skybox.color = {1.0f, 1.0f, 1.0f, 1.0f};
+        skybox.skyHorizonColor = {1.0f, 1.0f, 1.0f, 1.0f};
+        skybox.asset = cubeAsset;
+        m_gameObjects.push_back(skybox);
+    }
+}
+
+void DXRenderer::ClearProjectRuntimeAssets() {
+    m_gameObjects.clear();
+    m_editorUI.State.selectedObj = -1;
+    m_editorUI.State.selectedContentAsset = -1;
+    m_editorUI.State.playYOffset = 0.0f;
+    m_editorUI.State.isPlaying = false;
+    m_lastPlayMode = false;
+    m_playModeSnapshot.clear();
+    m_physicsSystem.Reset();
+
+    static const char* kBuiltinPrimitiveNames[] = {"Cube", "Sphere", "Plane", "Cylinder"};
+    auto isBuiltinPrimitive = [](const std::string& primitiveName) {
+        for (const char* builtinName : kBuiltinPrimitiveNames) {
+            if (primitiveName == builtinName) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (auto it = m_primitives.begin(); it != m_primitives.end();) {
+        if (isBuiltinPrimitive(it->first)) {
+            ++it;
+            continue;
+        }
+
+        delete it->second;
+        it = m_primitives.erase(it);
+    }
+
+    if (m_assets.size() > 4) {
+        m_assets.erase(m_assets.begin() + 4, m_assets.end());
+    }
+
+    m_materialCache.clear();
+    m_textureCache.clear();
+}
+
+void DXRenderer::QueueProjectStartupSceneLoad(const std::wstring& projectFilePath) {
+    m_pendingProjectFilePath = NormalizeAssetPath(projectFilePath);
+    m_hasPendingProjectSceneLoad = true;
+}
+
+void DXRenderer::ProcessPendingProjectSceneLoad() {
+    if (!m_hasPendingProjectSceneLoad) {
+        return;
+    }
+
+    m_hasPendingProjectSceneLoad = false;
+    const std::wstring projectFilePath = m_pendingProjectFilePath;
+    m_pendingProjectFilePath.clear();
+
+    if (projectFilePath.empty()) {
+        ClearProjectRuntimeAssets();
+        m_editorUI.State.currentMapPath.clear();
+        ResetSceneToDefaults();
+        return;
+    }
+
+    try {
+        LoadStartupSceneForProject(projectFilePath);
+    } catch (const std::exception& exception) {
+        DebugLog(std::string("Catalyst scene load failed: ") + exception.what());
+        ClearProjectRuntimeAssets();
+        ResetSceneToDefaults();
+    } catch (...) {
+        DebugLog("Catalyst scene load failed with an unknown exception.");
+        ClearProjectRuntimeAssets();
+        ResetSceneToDefaults();
+    }
+}
+
+bool DXRenderer::LoadStartupSceneForProject(const std::wstring& projectFilePath) {
+    const std::wstring normalizedProjectFilePath = NormalizeAssetPath(projectFilePath);
+    if (normalizedProjectFilePath.empty()) {
+        ClearProjectRuntimeAssets();
+        m_editorUI.State.currentMapPath.clear();
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    m_editorUI.State.currentProjectFile = normalizedProjectFilePath;
+    const std::wstring projectRoot = fs::path(normalizedProjectFilePath).parent_path().wstring();
+    m_editorUI.State.currentProjectFolder = projectRoot;
+    const std::wstring scenePath = NormalizeAssetPath(ResolveProjectStartupScenePath(normalizedProjectFilePath));
+    m_editorUI.State.currentMapPath = scenePath;
+
+    const fs::path sceneDirectory = fs::path(scenePath).parent_path();
+    if (!sceneDirectory.empty()) {
+        m_editorUI.State.currentBrowserPath = sceneDirectory.wstring();
+    } else {
+        m_editorUI.State.currentBrowserPath = (fs::path(projectRoot) / L"Assets").wstring();
+    }
+
+    return LoadSceneFromMap(scenePath, projectRoot);
+}
+
+bool DXRenderer::OpenSceneMap(const std::wstring& scenePath) {
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (projectFilePath.empty()) {
+        return false;
+    }
+
+    const std::wstring normalizedScenePath = NormalizeAssetPath(scenePath);
+    if (normalizedScenePath.empty()) {
+        return false;
+    }
+
+    const std::wstring projectRoot = fs::path(projectFilePath).parent_path().wstring();
+    m_editorUI.State.currentMapPath = normalizedScenePath;
+
+    const fs::path sceneDirectory = fs::path(normalizedScenePath).parent_path();
+    if (!sceneDirectory.empty()) {
+        m_editorUI.State.currentBrowserPath = sceneDirectory.wstring();
+    }
+
+    return LoadSceneFromMap(normalizedScenePath, projectRoot);
+}
+
+Asset* DXRenderer::ResolveSceneAsset(int assetId, const std::string& assetName, const std::wstring& assetSourcePath) {
+    if (!assetSourcePath.empty()) {
+        if (Asset* existingAsset = FindAssetBySourcePath(assetSourcePath)) {
+            if (assetId >= 0) {
+                existingAsset->id = assetId;
+            }
+            if (!assetName.empty()) {
+                existingAsset->name = assetName;
+            }
+            return existingAsset;
+        }
+
+        if (fs::exists(assetSourcePath)) {
+            try {
+                const MeshData meshData = ParseActorAssetForPreview(assetSourcePath);
+                if (!meshData.Vertices.empty() && !meshData.Indices.empty()) {
+                    const int resolvedAssetId = assetId >= 0 ? assetId : GetNextAvailableAssetId();
+                    const std::string meshKey = "SceneAsset_" + std::to_string(resolvedAssetId) + "_" + fs::path(assetSourcePath).stem().string();
+
+                    Mesh* mesh = new Mesh(m_device.Get(), m_commandList.Get(),
+                                          meshData.Vertices.data(), meshData.Vertices.size(),
+                                          meshData.Indices.data(), meshData.Indices.size());
+                    m_primitives[meshKey] = mesh;
+
+                    auto sceneAsset = std::make_shared<Asset>();
+                    sceneAsset->id = resolvedAssetId;
+                    sceneAsset->name = !assetName.empty() ? assetName : fs::path(assetSourcePath).stem().string();
+                    sceneAsset->sourcePath = WideToUtf8(NormalizeAssetPath(assetSourcePath));
+                    sceneAsset->type = AssetType::Mesh;
+                    sceneAsset->mesh = mesh;
+                    m_assets.push_back(sceneAsset);
+                    return sceneAsset.get();
+                }
+            } catch (const std::exception& exception) {
+                DebugLog(std::string("Catalyst asset restore failed for ") + WideToUtf8(assetSourcePath) + ": " + exception.what());
+            } catch (...) {
+                DebugLog(std::string("Catalyst asset restore failed for ") + WideToUtf8(assetSourcePath) + ": unknown exception.");
+            }
+        }
+    }
+
+    if (assetId >= 0) {
+        if (Asset* asset = FindAssetById(assetId)) {
+            return asset;
+        }
+    }
+
+    if (!assetName.empty()) {
+        for (const auto& asset : m_assets) {
+            if (asset && asset->name == assetName) {
+                return asset.get();
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+bool DXRenderer::SaveCurrentScene() {
+    try {
+        const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+        if (projectFilePath.empty()) {
+            return false;
+        }
+
+        const std::wstring projectRoot = fs::path(projectFilePath).parent_path().wstring();
+        std::wstring scenePath = !m_editorUI.State.currentMapPath.empty()
+            ? NormalizeAssetPath(m_editorUI.State.currentMapPath)
+            : NormalizeAssetPath(ResolveProjectStartupSceneSavePath(projectFilePath));
+        if (scenePath.empty()) {
+            return false;
+        }
+
+        std::error_code ec;
+        fs::create_directories(fs::path(scenePath).parent_path(), ec);
+
+        std::ofstream outFile(fs::path(scenePath), std::ios::binary | std::ios::trunc);
+        if (!outFile.is_open()) {
+            return false;
+        }
+
+        const std::vector<GameObject>& objectsToSave =
+            (m_editorUI.State.isPlaying && !m_playModeSnapshot.empty()) ? m_playModeSnapshot : m_gameObjects;
+
+        outFile << std::fixed << std::setprecision(6);
+        outFile << "{\n";
+        outFile << "  \"type\": \"CatalystScene\",\n";
+        outFile << "  \"version\": 2,\n";
+        outFile << "  \"objects\": [\n";
+
+        for (size_t objectIndex = 0; objectIndex < objectsToSave.size(); ++objectIndex) {
+            const GameObject& object = objectsToSave[objectIndex];
+
+            const std::wstring assetSourcePath =
+                (object.asset && !object.asset->sourcePath.empty())
+                ? MakeProjectRelativePath(projectRoot, DecodeStoredPath(object.asset->sourcePath))
+                : L"";
+            const std::wstring assignedMaterialPath =
+                object.assignedMaterial ? MakeProjectRelativePath(projectRoot, GetCachedMaterialPath(object.assignedMaterial)) : L"";
+
+            outFile << "    {\n";
+            outFile << "      \"name\": \"" << EscapeJsonString(object.name) << "\",\n";
+            outFile << "      \"type\": \"" << ObjectTypeToString(object.type) << "\",\n";
+            outFile << "      \"assetId\": " << (object.asset ? object.asset->id : -1) << ",\n";
+            outFile << "      \"assetName\": \"" << EscapeJsonString(object.asset ? object.asset->name : "") << "\",\n";
+            outFile << "      \"assetSource\": \"" << EscapeJsonString(WideToUtf8(assetSourcePath)) << "\",\n";
+            outFile << "      \"position\": ";
+            WriteJsonFloat3(outFile, object.position);
+            outFile << ",\n";
+            outFile << "      \"rotation\": ";
+            WriteJsonFloat3(outFile, object.rotation);
+            outFile << ",\n";
+            outFile << "      \"scale\": ";
+            WriteJsonFloat3(outFile, object.scale);
+            outFile << ",\n";
+            outFile << "      \"color\": ";
+            WriteJsonFloat4(outFile, object.color);
+            outFile << ",\n";
+            outFile << "      \"skyHorizonColor\": ";
+            WriteJsonFloat4(outFile, object.skyHorizonColor);
+            outFile << ",\n";
+            outFile << "      \"assignedMaterial\": \"" << EscapeJsonString(WideToUtf8(assignedMaterialPath)) << "\",\n";
+            outFile << "      \"overrideTextures\": {\n";
+            outFile << "        \"albedo\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAlbedo)))) << "\",\n";
+            outFile << "        \"normal\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideNormal)))) << "\",\n";
+            outFile << "        \"metallic\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideMetallic)))) << "\",\n";
+            outFile << "        \"roughness\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideRoughness)))) << "\",\n";
+            outFile << "        \"ao\": \"" << EscapeJsonString(WideToUtf8(MakeProjectRelativePath(projectRoot, GetCachedTexturePath(object.overrideAO)))) << "\"\n";
+            outFile << "      },\n";
+            outFile << "      \"lightIntensity\": " << object.lightIntensity << ",\n";
+            outFile << "      \"postProcess\": {\n";
+            outFile << "        \"exposure\": " << object.ppSettings.exposure << ",\n";
+            outFile << "        \"colorTint\": ";
+            WriteJsonFloat3(outFile, object.ppSettings.colorTint);
+            outFile << ",\n";
+            outFile << "        \"bloomThreshold\": " << object.ppSettings.bloomThreshold << ",\n";
+            outFile << "        \"bloomIntensity\": " << object.ppSettings.bloomIntensity << ",\n";
+            outFile << "        \"blendRadius\": " << object.ppSettings.blendRadius << "\n";
+            outFile << "      },\n";
+            outFile << "      \"physics\": {\n";
+            outFile << "        \"rigidBody\": {\n";
+            outFile << "          \"enabled\": " << (object.physics.rigidBody.enabled ? "true" : "false") << ",\n";
+            outFile << "          \"bodyType\": \"" << PhysicsBodyTypeToString(object.physics.rigidBody.bodyType) << "\",\n";
+            outFile << "          \"useGravity\": " << (object.physics.rigidBody.useGravity ? "true" : "false") << ",\n";
+            outFile << "          \"mass\": " << object.physics.rigidBody.mass << ",\n";
+            outFile << "          \"linearDamping\": " << object.physics.rigidBody.linearDamping << ",\n";
+            outFile << "          \"restitution\": " << object.physics.rigidBody.restitution << ",\n";
+            outFile << "          \"velocity\": ";
+            WriteJsonFloat3(outFile, object.physics.rigidBody.velocity);
+            outFile << "\n";
+            outFile << "        },\n";
+            outFile << "        \"collider\": {\n";
+            outFile << "          \"enabled\": " << (object.physics.collider.enabled ? "true" : "false") << ",\n";
+            outFile << "          \"shape\": \"" << PhysicsColliderShapeToString(object.physics.collider.shape) << "\",\n";
+            outFile << "          \"isTrigger\": " << (object.physics.collider.isTrigger ? "true" : "false") << ",\n";
+            outFile << "          \"centerOffset\": ";
+            WriteJsonFloat3(outFile, object.physics.collider.centerOffset);
+            outFile << ",\n";
+            outFile << "          \"boxExtents\": ";
+            WriteJsonFloat3(outFile, object.physics.collider.boxExtents);
+            outFile << ",\n";
+            outFile << "          \"sphereRadius\": " << object.physics.collider.sphereRadius << "\n";
+            outFile << "        }\n";
+            outFile << "      }\n";
+            outFile << "    " << (objectIndex + 1 < objectsToSave.size() ? "}," : "}");
+            outFile << "\n";
+        }
+
+        outFile << "  ]\n";
+        outFile << "}\n";
+        outFile.close();
+
+        m_editorUI.State.currentMapPath = scenePath;
+
+        const std::wstring startupScenePath = NormalizeAssetPath(ResolveProjectStartupSceneSavePath(projectFilePath));
+        if (!startupScenePath.empty() && scenePath == startupScenePath) {
+            return UpdateProjectStartupScene(projectFilePath, scenePath);
+        }
+
+        return true;
+    } catch (const std::exception& exception) {
+        DebugLog(std::string("Catalyst scene save failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        DebugLog("Catalyst scene save failed with an unknown exception.");
+        return false;
+    }
+}
+
+bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstring& projectRoot) {
+    ClearProjectRuntimeAssets();
+
+    if (scenePath.empty() || !fs::exists(scenePath)) {
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    std::ifstream inFile(fs::path(scenePath), std::ios::binary);
+    if (!inFile.is_open()) {
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(inFile)), std::istreambuf_iterator<char>());
+    JsonValue rootValue;
+    JsonParser parser(content);
+    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    const JsonValue* objectsValue = FindJsonField(rootValue, "objects");
+    if (!objectsValue || objectsValue->type != JsonValueType::Array) {
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    for (const JsonValue& serializedObject : objectsValue->arrayValue) {
+        if (serializedObject.type != JsonValueType::Object) {
+            continue;
+        }
+
+        GameObject sceneObject;
+        sceneObject.name = GetJsonString(serializedObject, "name", "GameObject");
+        sceneObject.type = ObjectTypeFromString(GetJsonString(serializedObject, "type", "Mesh"));
+        sceneObject.position = GetJsonFloat3(serializedObject, "position", {0.0f, 0.0f, 0.0f});
+        sceneObject.rotation = GetJsonFloat3(serializedObject, "rotation", {0.0f, 0.0f, 0.0f});
+        sceneObject.scale = GetJsonFloat3(serializedObject, "scale", {1.0f, 1.0f, 1.0f});
+        sceneObject.color = GetJsonFloat4(serializedObject, "color", {1.0f, 1.0f, 1.0f, 1.0f});
+        sceneObject.skyHorizonColor = GetJsonFloat4(serializedObject, "skyHorizonColor", {1.0f, 1.0f, 1.0f, 1.0f});
+        sceneObject.lightIntensity = GetJsonNumber(serializedObject, "lightIntensity", 1.0f);
+
+        const JsonValue* postProcessValue = FindJsonField(serializedObject, "postProcess");
+        if (postProcessValue && postProcessValue->type == JsonValueType::Object) {
+            sceneObject.ppSettings.exposure = GetJsonNumber(*postProcessValue, "exposure", 1.0f);
+            sceneObject.ppSettings.colorTint = GetJsonFloat3(*postProcessValue, "colorTint", {1.0f, 1.0f, 1.0f});
+            sceneObject.ppSettings.bloomThreshold = GetJsonNumber(*postProcessValue, "bloomThreshold", 1.0f);
+            sceneObject.ppSettings.bloomIntensity = GetJsonNumber(*postProcessValue, "bloomIntensity", 0.5f);
+            sceneObject.ppSettings.blendRadius = GetJsonNumber(*postProcessValue, "blendRadius", 1.0f);
+        }
+
+        const int assetId = GetJsonInt(serializedObject, "assetId", -1);
+        const std::wstring assetSourcePath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assetSource"));
+        sceneObject.asset = ResolveSceneAsset(assetId, GetJsonString(serializedObject, "assetName"), assetSourcePath);
+
+        const std::wstring materialPath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assignedMaterial"));
+        if (!materialPath.empty()) {
+            sceneObject.assignedMaterial = LoadMaterialAsset(materialPath);
+        }
+
+        const JsonValue* overrideTextures = FindJsonField(serializedObject, "overrideTextures");
+        if (overrideTextures && overrideTextures->type == JsonValueType::Object) {
+            const std::wstring albedoPath = ResolveSceneReferencePath(projectRoot, GetJsonString(*overrideTextures, "albedo"));
+            const std::wstring normalPath = ResolveSceneReferencePath(projectRoot, GetJsonString(*overrideTextures, "normal"));
+            const std::wstring metallicPath = ResolveSceneReferencePath(projectRoot, GetJsonString(*overrideTextures, "metallic"));
+            const std::wstring roughnessPath = ResolveSceneReferencePath(projectRoot, GetJsonString(*overrideTextures, "roughness"));
+            const std::wstring aoPath = ResolveSceneReferencePath(projectRoot, GetJsonString(*overrideTextures, "ao"));
+
+            sceneObject.overrideAlbedo = albedoPath.empty() ? nullptr : LoadTextureAsset(albedoPath);
+            sceneObject.overrideNormal = normalPath.empty() ? nullptr : LoadTextureAsset(normalPath);
+            sceneObject.overrideMetallic = metallicPath.empty() ? nullptr : LoadTextureAsset(metallicPath);
+            sceneObject.overrideRoughness = roughnessPath.empty() ? nullptr : LoadTextureAsset(roughnessPath);
+            sceneObject.overrideAO = aoPath.empty() ? nullptr : LoadTextureAsset(aoPath);
+        }
+
+        const JsonValue* physicsValue = FindJsonField(serializedObject, "physics");
+        if (physicsValue && physicsValue->type == JsonValueType::Object) {
+            const JsonValue* rigidBodyValue = FindJsonField(*physicsValue, "rigidBody");
+            if (rigidBodyValue && rigidBodyValue->type == JsonValueType::Object) {
+                sceneObject.physics.rigidBody.enabled = GetJsonBool(*rigidBodyValue, "enabled", false);
+                sceneObject.physics.rigidBody.bodyType =
+                    PhysicsBodyTypeFromString(GetJsonString(*rigidBodyValue, "bodyType", "Dynamic"));
+                sceneObject.physics.rigidBody.useGravity = GetJsonBool(*rigidBodyValue, "useGravity", true);
+                sceneObject.physics.rigidBody.mass = GetJsonNumber(*rigidBodyValue, "mass", 1.0f);
+                sceneObject.physics.rigidBody.linearDamping = GetJsonNumber(*rigidBodyValue, "linearDamping", 0.12f);
+                sceneObject.physics.rigidBody.restitution = GetJsonNumber(*rigidBodyValue, "restitution", 0.2f);
+                sceneObject.physics.rigidBody.velocity = GetJsonFloat3(*rigidBodyValue, "velocity", {0.0f, 0.0f, 0.0f});
+            }
+
+            const JsonValue* colliderValue = FindJsonField(*physicsValue, "collider");
+            if (colliderValue && colliderValue->type == JsonValueType::Object) {
+                sceneObject.physics.collider.enabled = GetJsonBool(*colliderValue, "enabled", false);
+                sceneObject.physics.collider.shape =
+                    PhysicsColliderShapeFromString(GetJsonString(*colliderValue, "shape", "Box"));
+                sceneObject.physics.collider.isTrigger = GetJsonBool(*colliderValue, "isTrigger", false);
+                sceneObject.physics.collider.centerOffset =
+                    GetJsonFloat3(*colliderValue, "centerOffset", {0.0f, 0.0f, 0.0f});
+                sceneObject.physics.collider.boxExtents =
+                    GetJsonFloat3(*colliderValue, "boxExtents", {0.5f, 0.5f, 0.5f});
+                sceneObject.physics.collider.sphereRadius =
+                    GetJsonNumber(*colliderValue, "sphereRadius", 0.5f);
+            }
+        } else if (sceneObject.name == "Floor") {
+            PhysicsSystem::InitializeDefaultCollider(sceneObject, false, true);
+        }
+
+        m_gameObjects.push_back(sceneObject);
+    }
+
+    if (m_gameObjects.empty()) {
+        ResetSceneToDefaults();
+        return false;
+    }
+
+    return true;
+}
+
+bool DXRenderer::OpenActorAssetViewer(const std::wstring& path) {
+    if (!m_device || !m_commandList || path.empty()) {
+        return false;
+    }
+
+    m_engineState = EngineState::Editor;
+    CloseMaterialAssetEditor();
+
+    if (m_editorUI.State.isActorViewerLoading) {
+        return false;
+    }
+
+    m_actorViewerMaterial = nullptr;
+    m_actorViewerAsset.reset();
+    m_actorViewerMesh.reset();
+    m_actorViewerBoundsCenter = {0.0f, 0.0f, 0.0f};
+    m_actorViewerBoundsExtents = {0.5f, 0.5f, 0.5f};
+    m_actorViewerBoundsRadius = 1.0f;
+
+    m_editorUI.State.showActorAssetViewer = true;
+    m_editorUI.State.actorViewerPath = path;
+    m_editorUI.State.actorViewerTitle = fs::path(path).stem().string();
+    m_editorUI.State.actorViewerSearch.clear();
+    m_editorUI.State.actorViewerSearchActive = false;
+    m_editorUI.State.actorViewerYaw = 0.65f;
+    m_editorUI.State.actorViewerPitch = -0.28f;
+    m_editorUI.State.actorViewerDistance = 4.0f;
+    m_editorUI.State.actorViewerFov = 35.0f;
+    m_editorUI.State.actorViewerShowFloor = true;
+    m_editorUI.State.actorViewerShowSky = true;
+    m_editorUI.State.actorViewerShowStats = true;
+    m_editorUI.State.actorViewerAutoRotate = false;
+    m_editorUI.State.actorViewerIsDragging = false;
+    m_editorUI.State.selectedObj = -1;
+    m_editorUI.State.isActorViewerLoading = true;
+    m_editorUI.State.actorViewerMeshLoad = std::make_shared<ActorViewerMeshLoadJob>();
+    if (m_standaloneActorViewerWindow && m_hwnd) {
+        SetWindowTextW(m_hwnd, (L"Catalyst Asset Viewer - " + fs::path(path).stem().wstring()).c_str());
+    }
+    std::shared_ptr<ActorViewerMeshLoadJob> meshLoadJob = m_editorUI.State.actorViewerMeshLoad;
+    std::thread([meshLoadJob, path]() {
+        try {
+            meshLoadJob->meshData = ParseActorAssetForPreview(path);
+        } catch (...) {
+            meshLoadJob->meshData = {};
+        }
+        meshLoadJob->completed.store(true, std::memory_order_release);
+    }).detach();
+    return true;
+}
+
+bool DXRenderer::OpenMaterialAssetEditor(const std::wstring& path) {
+    if (!m_device || path.empty()) {
+        return false;
+    }
+
+    m_engineState = EngineState::Editor;
+    CloseActorAssetViewer();
+
+    m_materialEditorMaterial = LoadMaterialAsset(path);
+    if (!m_materialEditorMaterial) {
+        return false;
+    }
+
+    if (!m_materialEditorPreviewAsset) {
+        m_materialEditorPreviewAsset = std::make_shared<Asset>();
+        m_materialEditorPreviewAsset->id = -2;
+        m_materialEditorPreviewAsset->type = AssetType::Mesh;
+    }
+
+    m_materialEditorPreviewAsset->name = "Material Preview";
+    m_materialEditorPreviewAsset->sourcePath = WideToUtf8(path);
+    m_materialEditorPreviewAsset->mesh = m_primitives["Sphere"];
+
+    m_editorUI.State.showMaterialAssetViewer = true;
+    m_editorUI.State.materialEditorPath = path;
+    m_editorUI.State.materialEditorTitle = fs::path(path).stem().string();
+    m_editorUI.State.materialEditorSearch.clear();
+    m_editorUI.State.materialEditorSearchActive = false;
+    m_editorUI.State.materialEditorPreviewMesh = 0;
+    m_editorUI.State.materialEditorYaw = 0.65f;
+    m_editorUI.State.materialEditorPitch = -0.28f;
+    m_editorUI.State.materialEditorDistance = 3.2f;
+    m_editorUI.State.materialEditorFov = 35.0f;
+    m_editorUI.State.materialEditorIsDragging = false;
+    m_editorUI.State.materialEditorShowFloor = true;
+    m_editorUI.State.materialEditorShowSky = true;
+    m_editorUI.State.materialEditorShowStats = true;
+    m_editorUI.State.materialEditorAutoRotate = false;
+    m_editorUI.State.currentBrowserPath = fs::path(path).parent_path().wstring();
+    m_editorUI.State.currentProjectFolder = FindProjectRootFromAssetPath(path);
+    if (m_standaloneMaterialEditorWindow && m_hwnd) {
+        SetWindowTextW(m_hwnd, (L"Catalyst Material Editor - " + fs::path(path).stem().wstring()).c_str());
+    }
+
+    return true;
+}
+
+bool DXRenderer::FinalizeActorAssetViewerLoad(const MeshData& meshData, const std::wstring& path) {
+    if (!m_device || !m_commandList) {
+        return false;
+    }
+
+    if (meshData.Vertices.empty() || meshData.Indices.empty()) {
+        return false;
+    }
+
+    try {
+        m_actorViewerMesh = std::make_unique<Mesh>(m_device.Get(), m_commandList.Get(),
+                                                   meshData.Vertices.data(), meshData.Vertices.size(),
+                                                   meshData.Indices.data(), meshData.Indices.size());
+    } catch (const std::exception& exception) {
+        DebugLog(std::string("Catalyst actor preview load failed: ") + exception.what());
+        return false;
+    } catch (...) {
+        DebugLog("Catalyst actor preview load failed with an unknown exception.");
+        return false;
+    }
+
+    m_actorViewerAsset = std::make_shared<Asset>();
+    m_actorViewerAsset->id = -1;
+    m_actorViewerAsset->name = fs::path(path).stem().string();
+    m_actorViewerAsset->sourcePath = WideToUtf8(path);
+    m_actorViewerAsset->mesh = m_actorViewerMesh.get();
+    m_actorViewerMaterial = nullptr;
+
+    const DirectX::BoundingBox& bounds = m_actorViewerMesh->GetBounds();
+    m_actorViewerBoundsCenter = bounds.Center;
+    m_actorViewerBoundsExtents = bounds.Extents;
+    m_actorViewerBoundsRadius = ComputePreviewRadius(bounds.Extents);
+
+    m_editorUI.State.actorViewerPath = path;
+    m_editorUI.State.actorViewerTitle = fs::path(path).stem().string();
+    m_editorUI.State.actorViewerYaw = 0.65f;
+    m_editorUI.State.actorViewerPitch = -0.28f;
+    m_editorUI.State.actorViewerDistance = (std::max)(2.2f, m_actorViewerBoundsRadius * 3.4f);
+    m_editorUI.State.actorViewerIsDragging = false;
+    return true;
+}
+
+void DXRenderer::CloseActorAssetViewer() {
+    m_editorUI.State.showActorAssetViewer = false;
+    m_editorUI.State.actorViewerPath.clear();
+    m_editorUI.State.actorViewerTitle.clear();
+    m_editorUI.State.actorViewerIsDragging = false;
+    m_editorUI.State.isActorViewerLoading = false;
+    m_editorUI.State.actorViewerMeshLoad.reset();
+    m_actorViewerMaterial = nullptr;
+    m_actorViewerAsset.reset();
+    m_actorViewerMesh.reset();
+    m_actorViewerBoundsCenter = {0.0f, 0.0f, 0.0f};
+    m_actorViewerBoundsExtents = {0.5f, 0.5f, 0.5f};
+    m_actorViewerBoundsRadius = 1.0f;
+}
+
+void DXRenderer::CloseMaterialAssetEditor() {
+    m_editorUI.State.showMaterialAssetViewer = false;
+    m_editorUI.State.materialEditorPath.clear();
+    m_editorUI.State.materialEditorTitle.clear();
+    m_editorUI.State.materialEditorIsDragging = false;
+    m_materialEditorMaterial = nullptr;
+    if (m_materialEditorPreviewAsset) {
+        m_materialEditorPreviewAsset->mesh = nullptr;
+    }
+}
+
+Texture* DXRenderer::LoadTextureAsset(const std::wstring& path) {
+    const std::wstring normalizedPath = NormalizeAssetPath(path);
+    if (normalizedPath.empty() || !fs::exists(normalizedPath)) {
+        return nullptr;
+    }
+
+    auto cached = m_textureCache.find(normalizedPath);
+    if (cached != m_textureCache.end()) {
+        return cached->second.get();
+    }
+
+    auto texture = std::make_shared<Texture>();
+    try {
+        texture->Load(normalizedPath, m_device.Get(), m_commandQueue.Get());
+    } catch (...) {
+        return nullptr;
+    }
+
+    texture->SetBindlessIndex(m_bindlessManager.AddTexture(m_device.Get(), texture->GetResource()));
+    if (texture->GetBindlessIndex() < 0) {
+        return nullptr;
+    }
+
+    m_textureCache[normalizedPath] = texture;
+    return texture.get();
+}
+
+void DXRenderer::SyncMaterialTextures(Material& material) {
+    material.albedoTexture = material.albedoPath.empty() ? nullptr : LoadTextureAsset(material.ResolveLinkedTexturePath(material.albedoPath));
+    material.normalTexture = material.normalPath.empty() ? nullptr : LoadTextureAsset(material.ResolveLinkedTexturePath(material.normalPath));
+    material.roughnessTexture = material.roughnessPath.empty() ? nullptr : LoadTextureAsset(material.ResolveLinkedTexturePath(material.roughnessPath));
+}
+
+Material* DXRenderer::LoadMaterialAsset(const std::wstring& path) {
+    const std::wstring normalizedPath = NormalizeAssetPath(path);
+    if (normalizedPath.empty() || !fs::exists(normalizedPath)) {
+        return nullptr;
+    }
+
+    std::error_code ec;
+    const auto fileWriteTime = fs::last_write_time(normalizedPath, ec);
+    auto cached = m_materialCache.find(normalizedPath);
+    if (cached == m_materialCache.end()) {
+        auto material = std::make_shared<Material>();
+        if (!material->LoadFromFile(normalizedPath)) {
+            return nullptr;
+        }
+        SyncMaterialTextures(*material);
+        m_materialCache[normalizedPath] = material;
+        return material.get();
+    }
+
+    if (!ec && cached->second->lastWriteTime != fileWriteTime) {
+        cached->second->LoadFromFile(normalizedPath);
+        SyncMaterialTextures(*cached->second);
+    }
+
+    return cached->second.get();
+}
+
+bool DXRenderer::BuildViewportRay(int mouseX, int mouseY, float topH, float viewW, float viewH,
+                                  XMFLOAT3& rayOrigin, XMFLOAT3& rayDirection) const {
+    if (viewW <= 0.0f || viewH <= 0.0f) {
+        return false;
+    }
+
+    const float ndcX = (2.0f * static_cast<float>(mouseX)) / viewW - 1.0f;
+    const float ndcY = 1.0f - (2.0f * (static_cast<float>(mouseY) - topH)) / viewH;
+
+    const XMMATRIX viewProj = m_camera.GetViewMatrix() * m_camera.GetProjectionMatrix();
+    XMVECTOR det;
+    const XMMATRIX invViewProj = XMMatrixInverse(&det, viewProj);
+
+    XMVECTOR nearPoint = XMVectorSet(ndcX, ndcY, 0.0f, 1.0f);
+    XMVECTOR farPoint = XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
+
+    nearPoint = XMVector3TransformCoord(nearPoint, invViewProj);
+    farPoint = XMVector3TransformCoord(farPoint, invViewProj);
+
+    XMStoreFloat3(&rayOrigin, nearPoint);
+    XMStoreFloat3(&rayDirection, XMVector3Normalize(XMVectorSubtract(farPoint, nearPoint)));
+    return true;
+}
+
+int DXRenderer::RaycastViewportObject(int mouseX, int mouseY, float topH, float viewW, float viewH) const {
+    XMFLOAT3 rayOrigin = {};
+    XMFLOAT3 rayDirection = {};
+    if (!BuildViewportRay(mouseX, mouseY, topH, viewW, viewH, rayOrigin, rayDirection)) {
+        return -1;
+    }
+
+    int hitIndex = -1;
+    float closestDistance = FLT_MAX;
+
+    for (int i = 0; i < static_cast<int>(m_gameObjects.size()); ++i) {
+        const GameObject& obj = m_gameObjects[i];
+        if (obj.name.find("Sky") != std::string::npos || obj.type == ObjectType::PostProcessVolume) {
+            continue;
+        }
+
+        const float radius = (std::max)(0.5f, (std::max)(obj.scale.x, (std::max)(obj.scale.y, obj.scale.z)));
+        float hitDistance = 0.0f;
+        if (RayIntersectsSphere(rayOrigin, rayDirection, obj.position, radius, hitDistance) && hitDistance < closestDistance) {
+            closestDistance = hitDistance;
+            hitIndex = i;
+        }
+    }
+
+    return hitIndex;
+}
 
 void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     m_hwnd = hwnd;
     m_width = width; 
     m_height = height;
+    m_lastFrameTick = GetTickCount64();
 
     ComPtr<IDXGIFactory4> factory; ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
 
@@ -75,7 +1537,6 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     CreateDefaultTextures(); 
 
     m_shadowPass.Initialize(m_device.Get()); 
-    m_postProcessPass.Initialize(m_device.Get(), width, height);
     m_quantaMeshPass.Initialize(m_device.Get());
     m_skyboxPass.Initialize(m_device.Get());
 
@@ -101,7 +1562,6 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     MeshData cylinderData = PrimitiveGenerator::CreateCylinder(0.5f, 1.0f, 32);
     m_primitives["Cylinder"] = new Mesh(m_device.Get(), m_commandList.Get(), cylinderData.Vertices.data(), cylinderData.Vertices.size(), cylinderData.Indices.data(), cylinderData.Indices.size());
 
-    // LOAD THE HDR FILE!
     m_skyboxPass.LoadHDR(m_device.Get(), m_commandList.Get(), L"sky.hdr");
     
     m_commandList->Close();
@@ -109,9 +1569,11 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     m_commandQueue->ExecuteCommandLists(1, uploadLists);
     FlushGPU();
     
-    // Bind the successfully loaded HDR texture to the Bindless Heap
     if (m_skyboxPass.GetHDRResource()) {
-        g_skyboxSrvIndex = m_bindlessManager.AddTexture(m_device.Get(), m_skyboxPass.GetHDRResource());
+        const int skyboxIndex = m_bindlessManager.AddTexture(m_device.Get(), m_skyboxPass.GetHDRResource());
+        if (skyboxIndex >= 0) {
+            g_skyboxSrvIndex = static_cast<uint32_t>(skyboxIndex);
+        }
     }
 
     auto cubeAsset = std::make_shared<Asset>(); cubeAsset->id = 0; cubeAsset->name = "Basic Cube"; cubeAsset->mesh = m_primitives["Cube"]; m_assets.push_back(cubeAsset);
@@ -120,11 +1582,7 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     auto cylinderAsset = std::make_shared<Asset>(); cylinderAsset->id = 3; cylinderAsset->name = "Basic Cylinder"; cylinderAsset->mesh = m_primitives["Cylinder"]; m_assets.push_back(cylinderAsset);
 
     m_camera.SetProjection(45.0f, static_cast<float>(width) / static_cast<float>(height), 0.1f, 5000.0f);
-
-    GameObject floor; floor.name = "Floor"; floor.position = {0, -3.0f, 15.0f}; floor.scale = {10,1,10}; floor.color = {0.3f, 0.3f, 0.3f, 1}; floor.asset = m_assets[2].get(); m_gameObjects.push_back(floor);
-
-    // Default Sky Actor
-    GameObject skybox; skybox.name = "Sky Atmosphere"; skybox.position = {0, -9999.0f, 0}; skybox.scale = {1,1,1}; skybox.color = {1,1,1,1}; skybox.asset = m_assets[0].get(); m_gameObjects.push_back(skybox);
+    ResetSceneToDefaults();
 }
 
 void DXRenderer::OnResize(int width, int height) {
@@ -148,377 +1606,78 @@ void DXRenderer::OnResize(int width, int height) {
     }
 
     CreateDepthBuffer();
-    m_postProcessPass.OnResize(m_device.Get(), width, height);
 }
 
 void DXRenderer::Render() {
-    float topMenuH = 25.0f;
-    float toolbarH = 40.0f;
-    float topH = topMenuH + toolbarH;
-    float rightW = 350.0f;
-    float bottomH = 250.0f;
-
-    static int selectedObj = -1; 
-    static bool showPlaceActorsMenu = false;
-    static bool deleteWasDown = false;
-    static std::wstring currentProjectFolder = L"";
-    static std::vector<std::string> discoveredAssets;
-    static DWORD lastScanTime = 0;
-    static int selectedContentAsset = -1;
-
-    static bool showImportPopup = false;
-    static std::wstring pendingImportPath = L"";
-    static std::string pendingImportName = "";
-    static bool isImportNameActive = false;
-    static bool wasImportJustOpened = false;
-
-    static bool triggerEditorSwap = false;
-    static std::wstring editorSwapProjName = L"";
-
-    if (m_engineState == EngineState::Launcher) {
-        float w = (float)m_width;
-        float h = (float)m_height;
-        float l_leftW = 260.0f;
-        float l_rightW = 320.0f;
-        float l_botH = 80.0f;
-        uint32_t unrealBlue = 0xFFD77800; 
-
-        m_uiDrawList.AddRectFilled(0, 0, l_leftW, h - l_botH, 0xFF111111);
-        m_uiDrawList.AddRectFilled(l_leftW, 0, w - l_leftW - l_rightW, h - l_botH, 0xFF1E1E1E);
-        m_uiDrawList.AddRectFilled(w - l_rightW, 0, l_rightW, h - l_botH, 0xFF151515);
-        m_uiDrawList.AddRectFilled(0, h - l_botH, w, l_botH, 0xFF222222);
-
-        static int activeCategory = 0; 
-        static std::string inputProjectName = "MyCatalystProject";
-        static bool isInputActive = false;
-        
-        static std::vector<ProjectInfo> recentProjects;
-        static bool recentsLoaded = false;
-
-        if (!recentsLoaded) {
-            recentProjects = GetRecentProjectsInfo();
-            recentsLoaded = true;
-        }
-
-        m_uiDrawList.AddText(m_fontManager, "PROJECT CATEGORIES", 20.0f, 20.0f, 0xFF888888);
-        
-        if (activeCategory == 0) {
-            m_uiDrawList.AddRectFilled(0, 60, l_leftW, 50, 0xFF2A2A2A);
-            m_uiDrawList.AddRectFilled(0, 60, 4, 50, unrealBlue);
-        }
-        if (m_uiContext.Button("New Project", 0, 60, l_leftW, 50, 0x00000000, 0x22FFFFFF, 0x44FFFFFF)) activeCategory = 0;
-
-        if (activeCategory == 1) {
-            m_uiDrawList.AddRectFilled(0, 110, l_leftW, 50, 0xFF2A2A2A);
-            m_uiDrawList.AddRectFilled(0, 110, 4, 50, unrealBlue);
-        }
-        if (m_uiContext.Button("Load Project", 0, 110, l_leftW, 50, 0x00000000, 0x22FFFFFF, 0x44FFFFFF)) activeCategory = 1;
-
-        if (activeCategory == 0) {
-            m_uiDrawList.AddText(m_fontManager, "New Project Templates", l_leftW + 30.0f, 20.0f, 0xFFFFFFFF);
-            
-            float tX = l_leftW + 30.0f; float tY = 80.0f;
-            m_uiDrawList.AddRectFilled(tX - 4, tY - 4, 128, 148, unrealBlue);
-            m_uiDrawList.AddRectFilled(tX, tY, 120, 140, 0xFF2A2A2A);
-            m_uiDrawList.AddText(m_fontManager, "Blank", tX + 25, tY + 110, 0xFFFFFFFF);
-            
-            m_uiDrawList.AddText(m_fontManager, "Blank", w - l_rightW + 20.0f, 20.0f, 0xFFFFFFFF);
-            m_uiDrawList.AddText(m_fontManager, "A clean empty project with no code. Start from scratch.", w - l_rightW + 20.0f, 60.0f, 0xFFAAAAAA, l_rightW - 40.0f);
-
-            m_uiDrawList.AddText(m_fontManager, "Project Name:", 30.0f, h - l_botH + 25.0f, 0xFFFFFFFF);
-            m_uiContext.TextInput("ProjNameInput", inputProjectName, 210.0f, h - l_botH + 15.0f, 300.0f, 50.0f, isInputActive);
-
-            if (m_uiContext.Button("Cancel", w - 240, h - l_botH + 20, 100, 40, 0xFF333333, 0xFF444444, 0xFF222222)) PostQuitMessage(0);
-            
-            if (m_uiContext.Button("Create", w - 130, h - l_botH + 20, 100, 40, unrealBlue, 0xFFFF9020, 0xFFB05000)) {
-                std::wstring folder = BrowseForProjectFolder(m_hwnd);
-                if (!folder.empty() && !inputProjectName.empty()) { 
-                    CreateNewProject(folder, inputProjectName);
-                    std::wstring wProjName(inputProjectName.begin(), inputProjectName.end());
-                    currentProjectFolder = (std::filesystem::path(folder) / wProjName).wstring();
-                    
-                    triggerEditorSwap = true;
-                    editorSwapProjName = wProjName;
-                    recentsLoaded = false;
-                }
-            }
-        } else {
-            m_uiDrawList.AddText(m_fontManager, "Recent Projects", l_leftW + 30.0f, 20.0f, 0xFFFFFFFF);
-            float py = 80.0f;
-            
-            for (const auto& projInfo : recentProjects) {
-                std::string nameStr; for (wchar_t c : projInfo.ProjectName) nameStr += static_cast<char>(c);
-                std::string verStr;  for (wchar_t c : projInfo.EngineVersion) verStr += static_cast<char>(c);
-                
-                m_uiDrawList.AddRectFilled(l_leftW + 30.0f, py, w - l_leftW - l_rightW - 60.0f, 60.0f, 0xFF2A2A2A);
-                m_uiDrawList.AddText(m_fontManager, nameStr, l_leftW + 50.0f, py + 20.0f, 0xFFFFFFFF);
-                m_uiDrawList.AddText(m_fontManager, "Catalyst Engine " + verStr, l_leftW + 50.0f, py + 45.0f, 0xFF888888);
-                
-                if (m_uiContext.Button("", l_leftW + 30.0f, py, w - l_leftW - l_rightW - 60.0f, 60.0f, 0x00000000, 0x22FFFFFF, 0x44FFFFFF)) {
-                    AddRecentProject(projInfo.Path);
-                    currentProjectFolder = std::filesystem::path(projInfo.Path).parent_path().wstring();
-                    
-                    triggerEditorSwap = true;
-                    editorSwapProjName = projInfo.ProjectName;
-                    recentsLoaded = false;
-                }
-                py += 70.0f;
-            }
-
-            if (m_uiContext.Button("Cancel", w - 240, h - l_botH + 20, 100, 40, 0xFF333333, 0xFF444444, 0xFF222222)) PostQuitMessage(0);
-            
-            if (m_uiContext.Button("Browse...", w - 130, h - l_botH + 20, 100, 40, unrealBlue, 0xFFFF9020, 0xFFB05000)) {
-                std::wstring file = BrowseForProjectFile(m_hwnd);
-                if (!file.empty()) {
-                    AddRecentProject(file);
-                    currentProjectFolder = std::filesystem::path(file).parent_path().wstring();
-                    std::wstring pName = std::filesystem::path(file).stem().wstring();
-                    
-                    triggerEditorSwap = true;
-                    editorSwapProjName = pName;
-                    recentsLoaded = false;
-                }
-            }
-        }
-    } else {
-        m_camera.Update(0.016f); 
-        
-        float w = (float)m_width;
-        float h = (float)m_height;
-        float outlinerH = (h - topH) * 0.45f;
-        
-        bool deleteIsDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
-        if (deleteIsDown && !deleteWasDown && selectedObj >= 0 && selectedObj < m_gameObjects.size()) {
-            m_gameObjects.erase(m_gameObjects.begin() + selectedObj);
-            selectedObj = -1;
-        }
-        deleteWasDown = deleteIsDown;
-
-        m_uiDrawList.AddRectFilled(0, 0, w, topMenuH, 0xFF000000); 
-        
-        std::vector<std::string> topMenus = {"File", "Edit", "Window", "Tools", "Build", "Help"};
-        float menuX = 10.0f;
-        for (const auto& menuStr : topMenus) {
-            m_uiContext.Button(menuStr, menuX, 0.0f, 65.0f, topMenuH, 0x00000000, 0xFF333333, 0xFF555555);
-            menuX += 65.0f;
-        }
-        
-        m_uiDrawList.AddRectFilled(0, topMenuH, w, toolbarH, 0xFF151515); 
-        m_uiContext.Button("Save All", 15.0f, topMenuH + 5.0f, 80.0f, 30.0f, 0x00000000, 0xFF333333, 0xFF444444);
-        
-        static bool isPlaying = false;
-        uint32_t playBtnColor = isPlaying ? 0xFF222288 : 0xFF225522; 
-        std::string playText = isPlaying ? "Stop" : "Play";
-        
-        if (m_uiContext.Button(playText, 105.0f, topMenuH + 5.0f, 60.0f, 30.0f, playBtnColor, 0xFF337733, 0xFF114411)) {
-            isPlaying = !isPlaying;
-        }
-
-        if (m_uiContext.Button("Place Actors +", 175.0f, topMenuH + 5.0f, 130.0f, 30.0f, 0x00000000, 0xFF333333, 0xFF555555)) {
-            showPlaceActorsMenu = !showPlaceActorsMenu;
-        }
-
-        if (isPlaying) {
-            for (auto& obj : m_gameObjects) {
-                if (obj.name.find("Sky") == std::string::npos && obj.name != "Floor") {
-                    obj.position.y += sinf(GetTickCount() * 0.005f) * 0.005f;
-                }
-            }
-        }
-
-        float rightX = w - rightW;
-        m_uiDrawList.AddRectFilled(rightX, topH, rightW, outlinerH, 0xFF1A1A1A); 
-        m_uiDrawList.AddRectFilled(rightX, topH, rightW, 30.0f, 0xFF0E0E0E);     
-        m_uiDrawList.AddText(m_fontManager, "Outliner", rightX + 15.0f, topH + 20.0f, 0xFFFFFFFF);
-
-        if (selectedObj >= static_cast<int>(m_gameObjects.size())) selectedObj = -1;
-        
-        float listY = topH + 35.0f;
-        for (int i = 0; i < static_cast<int>(m_gameObjects.size()); ++i) {
-            uint32_t btnColor = (selectedObj == i) ? 0xFFD77800 : 0x00000000;
-            if (m_uiContext.Button(m_gameObjects[i].name, rightX, listY, rightW, 25.0f, btnColor, 0xFF333333, 0xFF555555)) {
-                selectedObj = i;
-            }
-            listY += 25.0f;
-        }
-
-        float detailsY = topH + outlinerH;
-        float detailsH = h - detailsY;
-        m_uiDrawList.AddRectFilled(rightX, detailsY, rightW, detailsH, 0xFF1A1A1A); 
-        m_uiDrawList.AddRectFilled(rightX, detailsY, rightW, 30.0f, 0xFF0E0E0E);    
-        m_uiDrawList.AddText(m_fontManager, "Details", rightX + 15.0f, detailsY + 20.0f, 0xFFFFFFFF);
-
-        if (selectedObj >= 0 && selectedObj < static_cast<int>(m_gameObjects.size())) {
-            auto& obj = m_gameObjects[selectedObj];
-            float insX = rightX + 15.0f;
-            float insY = detailsY + 45.0f;
-            float sW = rightW - 30.0f;
-            
-            m_uiDrawList.AddRectFilled(insX, insY, sW, 30.0f, 0xFF222222);
-            m_uiDrawList.AddText(m_fontManager, obj.name, insX + 5.0f, insY + 22.0f, 0xFFFFFFFF);
-            insY += 45.0f;
-            
-            // Cleaned up the details panel to remove procedural colors since we are using HDR!
-            m_uiDrawList.AddText(m_fontManager, "Transform", insX, insY + 15.0f, 0xFFCCCCCC);
-            insY += 25.0f;
-            m_uiContext.DragFloat("Loc X", obj.position.x, 0.05f, insX, insY, sW, 24.0f); insY += 28.0f;
-            m_uiContext.DragFloat("Loc Y", obj.position.y, 0.05f, insX, insY, sW, 24.0f); insY += 28.0f;
-            m_uiContext.DragFloat("Loc Z", obj.position.z, 0.05f, insX, insY, sW, 24.0f); insY += 35.0f;
-
-            m_uiDrawList.AddText(m_fontManager, "Material", insX, insY + 15.0f, 0xFFCCCCCC);
-            insY += 25.0f;
-            m_uiContext.DragFloat("Col R", obj.color.x, 0.01f, insX, insY, sW, 24.0f); insY += 28.0f;
-            m_uiContext.DragFloat("Col G", obj.color.y, 0.01f, insX, insY, sW, 24.0f); insY += 28.0f;
-            m_uiContext.DragFloat("Col B", obj.color.z, 0.01f, insX, insY, sW, 24.0f); insY += 28.0f;
-        }
-
-        float bottomY = h - bottomH;
-        float bottomW = w - rightW;
-        m_uiDrawList.AddRectFilled(0, bottomY, bottomW, bottomH, 0xFF151515);
-        m_uiDrawList.AddRectFilled(0, bottomY, bottomW, 30.0f, 0xFF0E0E0E); 
-        m_uiDrawList.AddText(m_fontManager, "Content Browser", 15.0f, bottomY + 20.0f, 0xFFFFFFFF);
-        
-        if (m_uiContext.Button("Import", 160.0f, bottomY + 3.0f, 80.0f, 24.0f, 0xFF333333, 0xFF444444, 0xFF555555)) {
-            std::wstring sourceFile = BrowseForAssetFile(m_hwnd);
-            if (!sourceFile.empty() && !currentProjectFolder.empty()) {
-                pendingImportPath = sourceFile;
-                pendingImportName = std::filesystem::path(sourceFile).stem().string(); 
-                showImportPopup = true;
-                wasImportJustOpened = true; 
-            }
-        }
-        
-        m_uiDrawList.AddRectFilled(10.0f, bottomY + 40.0f, 180.0f, bottomH - 50.0f, 0xFF1A1A1A); 
-        m_uiDrawList.AddText(m_fontManager, "> Project\n  > Assets\n  > Materials\n  > Audio", 20.0f, bottomY + 70.0f, 0xFFAAAAAA);
-        
-        if (GetTickCount() - lastScanTime > 2000) {
-            discoveredAssets.clear();
-            if (!currentProjectFolder.empty()) {
-                std::filesystem::path assetPath = std::filesystem::path(currentProjectFolder) / L"Assets";
-                if (std::filesystem::exists(assetPath)) {
-                    for (const auto& entry : std::filesystem::directory_iterator(assetPath)) {
-                        if (entry.path().extension() == L".catalystactor") {
-                            discoveredAssets.push_back(entry.path().stem().string());
-                        }
-                    }
-                }
-            }
-            lastScanTime = GetTickCount();
-        }
-
-        float assetX = 210.0f;
-        float assetY = bottomY + 40.0f;
-        
-        for(int i = 0; i < static_cast<int>(discoveredAssets.size()); i++) {
-            uint32_t boxColor = (selectedContentAsset == i) ? 0xFFD77800 : 0xFF222222;
-            
-            m_uiDrawList.AddRectFilled(assetX - 2, assetY - 2, 94.0f, 94.0f, boxColor); 
-            m_uiDrawList.AddRectFilled(assetX, assetY, 90.0f, 90.0f, 0xFF333333);       
-            m_uiDrawList.AddRectFilled(assetX, assetY + 65.0f, 90.0f, 25.0f, 0xFF222222);
-            
-            std::string shortName = discoveredAssets[i].length() > 10 ? discoveredAssets[i].substr(0, 10) + ".." : discoveredAssets[i];
-            m_uiDrawList.AddText(m_fontManager, shortName, assetX + 5.0f, assetY + 82.0f, 0xFFFFFFFF);
-            
-            if (m_uiContext.Button("", assetX, assetY, 90.0f, 90.0f, 0x00000000, 0x22FFFFFF, 0x44FFFFFF)) {
-                selectedContentAsset = i;
-            }
-            
-            assetX += 105.0f;
-            if (assetX > bottomW - 100.0f) {
-                assetX = 210.0f;
-                assetY += 105.0f;
-            }
-        }
-
-        m_uiDrawList.AddRectFilled(0, topH - 2.0f, w, 2.0f, 0xFF000000);
-        m_uiDrawList.AddRectFilled(bottomW - 2.0f, topH, 2.0f, h, 0xFF000000);
-        m_uiDrawList.AddRectFilled(0, bottomY - 2.0f, bottomW, 2.0f, 0xFF000000);
-
-        if (showPlaceActorsMenu) {
-            float menuX = 175.0f;
-            float menuY = topH; 
-            float menuW = 150.0f;
-            
-            m_uiDrawList.AddRectFilled(menuX, menuY, menuW, 175.0f, 0xFF2A2A2A);
-            m_uiDrawList.AddRectFilled(menuX, menuY, menuW, 2.0f, 0xFFD77800); 
-
-            std::string primitives[5] = {"Cube", "Sphere", "Plane", "Cylinder", "Sky Atmosphere"};
-            for (int i = 0; i < 5; i++) {
-                if (m_uiContext.Button(primitives[i], menuX + 5.0f, menuY + 10.0f + (i * 32.0f), menuW - 10.0f, 28.0f, 0xFF222222, 0xFF444444, 0xFF555555)) {
-                    GameObject newObj;
-                    newObj.name = primitives[i] + "_" + std::to_string(m_gameObjects.size());
-                    if (i == 4) {
-                        newObj.position = {0, -9999.0f, 0};
-                        newObj.scale = {1,1,1};
-                        newObj.color = {1,1,1,1};
-                        newObj.asset = m_assets[0].get(); 
-                    } else {
-                        newObj.position = {0, 0, 0};
-                        newObj.scale = {1,1,1};
-                        newObj.color = {0.8f, 0.8f, 0.8f, 1.0f};
-                        newObj.asset = m_assets[i].get(); 
-                    }
-                    m_gameObjects.push_back(newObj);
-                    selectedObj = static_cast<int>(m_gameObjects.size()) - 1;
-                    showPlaceActorsMenu = false; 
-                }
-            }
-            
-            if (g_InputManager->IsMouseButtonPressed(0)) {
-                int mx = g_InputManager->GetMouseX();
-                int my = g_InputManager->GetMouseY();
-                bool inMenu = (mx >= menuX && mx <= menuX + menuW && my >= menuY && my <= menuY + 175.0f);
-                bool inButton = (mx >= 175.0f && mx <= 175.0f + 130.0f && my >= topMenuH + 5.0f && my <= topMenuH + 35.0f);
-                if (!inMenu && !inButton) {
-                    showPlaceActorsMenu = false;
-                }
-            }
-        }
-
-        if (showImportPopup) {
-            float popupW = 350.0f;
-            float popupH = 180.0f;
-            float popupX = (w - popupW) / 2.0f;
-            float popupY = (h - popupH) / 2.0f;
-
-            m_uiDrawList.AddRectFilled(0, 0, w, h, 0xAA000000); 
-
-            m_uiDrawList.AddRectFilled(popupX, popupY, popupW, popupH, 0xFF1A1A1A);
-            m_uiDrawList.AddRectFilled(popupX, popupY, popupW, 30.0f, 0xFF0E0E0E);
-            m_uiDrawList.AddText(m_fontManager, "Name Imported Asset", popupX + 15.0f, popupY + 20.0f, 0xFFFFFFFF);
-
-            m_uiDrawList.AddText(m_fontManager, "Actor Name:", popupX + 20.0f, popupY + 65.0f, 0xFFCCCCCC);
-            
-            m_uiContext.TextInput("ImportNameInput", pendingImportName, popupX + 20.0f, popupY + 80.0f, popupW - 40.0f, 40.0f, isImportNameActive);
-
-            if (wasImportJustOpened) {
-                isImportNameActive = true;
-                wasImportJustOpened = false;
-            }
-
-            if (m_uiContext.Button("Cancel", popupX + 20.0f, popupY + 130.0f, 100.0f, 30.0f, 0xFF333333, 0xFF444444, 0xFF222222)) {
-                showImportPopup = false;
-            }
-            if (m_uiContext.Button("Import ", popupX + popupW - 120.0f, popupY + 130.0f, 100.0f, 30.0f, 0xFFD77800, 0xFFFF9020, 0xFFB05000)) {
-                if (!pendingImportName.empty()) {
-                    std::wstring assetsFolder = (std::filesystem::path(currentProjectFolder) / L"Assets").wstring();
-                    std::wstring wNewName(pendingImportName.begin(), pendingImportName.end());
-                    ImportAssetToProject(pendingImportPath, assetsFolder, wNewName);
-                    lastScanTime = 0; 
-                    showImportPopup = false;
-                }
-            }
-        }
-    }
-
     m_commandAllocator->Reset(); 
     m_commandList->Reset(m_commandAllocator.Get(), nullptr);
 
-    D3D12_VIEWPORT fullViewport = { 0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f };
-    D3D12_RECT fullScissor = { 0, 0, m_width, m_height };
-    m_commandList->RSSetViewports(1, &fullViewport);
-    m_commandList->RSSetScissorRects(1, &fullScissor);
+    float topH = 65.0f;
+    float rightW = 350.0f;
+    float bottomH = 250.0f;
+    float w = (float)m_width;
+    float h = (float)m_height;
+    float viewW = (std::max)(1.0f, w - rightW);
+    float viewH = (std::max)(1.0f, h - topH - bottomH);
+    ULONGLONG frameTick = GetTickCount64();
+    float deltaTime = 0.0f;
+    if (m_lastFrameTick != 0) {
+        deltaTime = (std::min)(0.1f, static_cast<float>(frameTick - m_lastFrameTick) / 1000.0f);
+    }
+    m_lastFrameTick = frameTick;
 
+    m_editorUI.State.mx = g_InputManager ? g_InputManager->GetMouseX() : 0;
+    m_editorUI.State.my = g_InputManager ? g_InputManager->GetMouseY() : 0;
+
+    // 1. Process Logic Data
+    if (m_engineState == EngineState::Launcher) {
+        m_editorUI.DrawLauncher(this, w, h);
+    } else if (m_engineState == EngineState::ProjectLoading) {
+        m_editorUI.DrawProjectLoading(this, w, h);
+    } else {
+        m_editorUI.DrawEditor(this, w, h, topH, rightW, bottomH);
+        if (!m_editorUI.State.showActorAssetViewer && !m_editorUI.State.showMaterialAssetViewer) {
+            bool mouseInViewport =
+                m_editorUI.State.mx >= 0 && m_editorUI.State.mx <= viewW &&
+                m_editorUI.State.my >= topH && m_editorUI.State.my <= topH + viewH;
+            m_camera.SetProjection(45.0f, viewW / viewH, 0.1f, 5000.0f);
+            m_camera.Update(deltaTime, mouseInViewport);
+            m_editorUI.ProcessDragAndDrop(this, w, h, topH, viewW, viewH);
+        }
+    }
+
+    const bool canSimulateScenePhysics =
+        m_engineState == EngineState::Editor &&
+        !m_editorUI.State.showActorAssetViewer &&
+        !m_editorUI.State.showMaterialAssetViewer;
+
+    if (canSimulateScenePhysics) {
+        if (m_editorUI.State.isPlaying && !m_lastPlayMode) {
+            m_playModeSnapshot = m_gameObjects;
+            m_physicsSystem.Reset();
+        } else if (!m_editorUI.State.isPlaying && m_lastPlayMode) {
+            if (!m_playModeSnapshot.empty()) {
+                m_gameObjects = m_playModeSnapshot;
+            }
+            m_playModeSnapshot.clear();
+            m_physicsSystem.Reset();
+        }
+
+        m_lastPlayMode = m_editorUI.State.isPlaying;
+        if (m_editorUI.State.isPlaying) {
+            m_physicsSystem.Step(m_gameObjects, deltaTime);
+        }
+    } else if (m_lastPlayMode) {
+        if (!m_playModeSnapshot.empty()) {
+            m_gameObjects = m_playModeSnapshot;
+        }
+        m_editorUI.State.isPlaying = false;
+        m_lastPlayMode = false;
+        m_playModeSnapshot.clear();
+        m_physicsSystem.Reset();
+    }
+
+    // 2. Set Render Targets & Bindless Heaps *BEFORE* 3D Drawing!
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += m_frameIndex * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -530,94 +1689,230 @@ void DXRenderer::Render() {
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     m_commandList->ResourceBarrier(1, &barrier);
 
-    const float clearColor[] = { 0.05f, 0.05f, 0.05f, 1.0f }; 
+    const bool showActorAssetViewer = m_editorUI.State.showActorAssetViewer && m_actorViewerAsset && m_actorViewerAsset->mesh;
+    const bool showMaterialAssetViewer = m_editorUI.State.showMaterialAssetViewer && m_materialEditorPreviewAsset && m_materialEditorPreviewAsset->mesh;
+    const float clearColor[] = {
+        (showActorAssetViewer || showMaterialAssetViewer) ? 0.075f : 0.05f,
+        (showActorAssetViewer || showMaterialAssetViewer) ? 0.082f : 0.05f,
+        (showActorAssetViewer || showMaterialAssetViewer) ? 0.095f : 0.05f,
+        1.0f
+    };
     m_commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
     m_commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     m_commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
+    // FIX: Bind the heap BEFORE any Draw calls happen!
     ID3D12DescriptorHeap* heaps[] = { m_bindlessManager.GetHeap() }; 
     m_commandList->SetDescriptorHeaps(1, heaps);
 
+    // 3. Draw 3D Scene
     if (m_engineState == EngineState::Editor) {
-        float viewW = (std::max)(1.0f, m_width - rightW);
-        float viewH = (std::max)(1.0f, m_height - topH - bottomH);
+        if (showMaterialAssetViewer) {
+            Mesh* previewMesh = m_materialEditorPreviewAsset->mesh;
+            const DirectX::BoundingBox& bounds = previewMesh->GetBounds();
+            const DirectX::XMFLOAT3 boundsCenter = bounds.Center;
+            const DirectX::XMFLOAT3 boundsExtents = bounds.Extents;
+            const float boundsRadius = ComputePreviewRadius(bounds.Extents);
 
-        bool isGizmoHovered = false;
-        if (selectedObj >= 0 && selectedObj < static_cast<int>(m_gameObjects.size())) {
-            if (m_gameObjects[selectedObj].name.find("Sky") == std::string::npos) {
-                m_uiContext.TransformGizmo(m_gameObjects[selectedObj].position, m_camera, 0.0f, topH, viewW, viewH, isGizmoHovered);
+            const float previewWidth = (std::max)(1.0f, m_editorUI.State.materialEditorViewportW);
+            const float previewHeight = (std::max)(1.0f, m_editorUI.State.materialEditorViewportH);
+            D3D12_VIEWPORT sceneViewport = { 0.0f, 0.0f, previewWidth, previewHeight, 0.0f, 1.0f };
+            D3D12_RECT sceneScissor = { 0, 0, static_cast<LONG>(previewWidth), static_cast<LONG>(previewHeight) };
+            m_commandList->RSSetViewports(1, &sceneViewport);
+            m_commandList->RSSetScissorRects(1, &sceneScissor);
+
+            const DirectX::XMFLOAT3 centeredOffset = {
+                -boundsCenter.x,
+                -boundsCenter.y,
+                -boundsCenter.z
+            };
+            const DirectX::XMFLOAT3 previewTarget = {0.0f, boundsRadius * 0.12f, 0.0f};
+            const float yaw = m_editorUI.State.materialEditorYaw;
+            const float pitch = m_editorUI.State.materialEditorPitch;
+            const float distance = (std::max)(1.0f, m_editorUI.State.materialEditorDistance);
+
+            const DirectX::XMFLOAT3 previewPosition = {
+                previewTarget.x + sinf(yaw) * cosf(pitch) * distance,
+                previewTarget.y + sinf(pitch) * distance,
+                previewTarget.z + cosf(yaw) * cosf(pitch) * distance
+            };
+
+            Camera previewCamera;
+            previewCamera.SetProjection(m_editorUI.State.materialEditorFov, previewWidth / previewHeight, 0.05f, 5000.0f);
+            previewCamera.SetLookAt(previewPosition, previewTarget);
+
+            std::vector<GameObject> previewObjects;
+            previewObjects.reserve(2);
+
+            if (m_editorUI.State.materialEditorShowFloor && m_assets.size() > 2) {
+                GameObject floor;
+                floor.name = "MaterialPreviewFloor";
+                floor.position = {0.0f, -boundsExtents.y - 0.02f, 0.0f};
+                const float floorScale = (std::max)(1.5f, boundsRadius * 0.7f);
+                floor.scale = {floorScale, 1.0f, floorScale};
+                floor.color = {0.72f, 0.74f, 0.78f, 1.0f};
+                floor.asset = m_assets[2].get();
+                previewObjects.push_back(floor);
             }
-        }
 
-        if (g_InputManager->IsMouseButtonPressed(0) && !showPlaceActorsMenu && !showImportPopup) {
-            int mx = g_InputManager->GetMouseX();
-            int my = g_InputManager->GetMouseY();
+            GameObject previewObject;
+            previewObject.name = "MaterialPreview";
+            previewObject.position = centeredOffset;
+            previewObject.scale = {1.0f, 1.0f, 1.0f};
+            previewObject.color = {1.0f, 1.0f, 1.0f, 1.0f};
+            previewObject.asset = m_materialEditorPreviewAsset.get();
+            previewObject.assignedMaterial = m_materialEditorMaterial;
+            previewObjects.push_back(previewObject);
 
-            if (mx >= 0 && mx <= viewW && my >= topH && my <= topH + viewH) {
-                if (!isGizmoHovered) {
-                    int closestObj = -1;
-                    float closestDist = 50.0f; 
+            const XMMATRIX lightSpace = XMMatrixIdentity();
+            const XMFLOAT3 lightDir = {-0.45f, -0.82f, 0.35f};
+            m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), previewObjects, previewCamera,
+                                    static_cast<int>(previewWidth), static_cast<int>(previewHeight),
+                                    lightSpace, lightDir, 1.45f, nullptr, m_bindlessManager.GetHeap(),
+                                    m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+                                    m_frameHeapOffset, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
 
-                    DirectX::XMMATRIX viewProj = m_camera.GetViewMatrix() * m_camera.GetProjectionMatrix();
+            if (m_editorUI.State.materialEditorShowSky) {
+                m_skyboxPass.Render(
+                    m_commandList.Get(),
+                    m_device.Get(),
+                    m_primitives["Cube"],
+                    previewCamera,
+                    m_bindlessManager.GetHeap(),
+                    g_skyboxSrvIndex,
+                    {0.82f, 0.89f, 0.98f, 1.0f},
+                    {0.92f, 0.94f, 0.98f, 1.0f});
+            }
+        } else if (showActorAssetViewer) {
+            const float previewWidth = (std::max)(1.0f, m_editorUI.State.actorViewerViewportW);
+            const float previewHeight = (std::max)(1.0f, m_editorUI.State.actorViewerViewportH);
+            D3D12_VIEWPORT sceneViewport = { 0.0f, 0.0f, previewWidth, previewHeight, 0.0f, 1.0f };
+            D3D12_RECT sceneScissor = { 0, 0, static_cast<LONG>(previewWidth), static_cast<LONG>(previewHeight) };
+            m_commandList->RSSetViewports(1, &sceneViewport);
+            m_commandList->RSSetScissorRects(1, &sceneScissor);
 
-                    for (int i = 0; i < static_cast<int>(m_gameObjects.size()); ++i) {
-                        DirectX::XMVECTOR wPos = DirectX::XMLoadFloat3(&m_gameObjects[i].position);
-                        DirectX::XMVECTOR ndc = DirectX::XMVector3TransformCoord(wPos, viewProj);
-                        DirectX::XMFLOAT3 ndc3;
-                        DirectX::XMStoreFloat3(&ndc3, ndc);
+            const DirectX::XMFLOAT3 centeredOffset = {
+                -m_actorViewerBoundsCenter.x,
+                -m_actorViewerBoundsCenter.y,
+                -m_actorViewerBoundsCenter.z
+            };
+            const DirectX::XMFLOAT3 previewTarget = {0.0f, m_actorViewerBoundsRadius * 0.12f, 0.0f};
+            const float yaw = m_editorUI.State.actorViewerYaw;
+            const float pitch = m_editorUI.State.actorViewerPitch;
+            const float distance = (std::max)(1.0f, m_editorUI.State.actorViewerDistance);
 
-                        if (ndc3.z >= 0.0f && ndc3.z <= 1.0f) { 
-                            float scrX = 0.0f + (ndc3.x + 1.0f) * 0.5f * viewW;
-                            float scrY = topH + (1.0f - ndc3.y) * 0.5f * viewH;
+            const DirectX::XMFLOAT3 previewPosition = {
+                previewTarget.x + sinf(yaw) * cosf(pitch) * distance,
+                previewTarget.y + sinf(pitch) * distance,
+                previewTarget.z + cosf(yaw) * cosf(pitch) * distance
+            };
 
-                            float dist = sqrtf((mx - scrX)*(mx - scrX) + (my - scrY)*(my - scrY));
-                            if (dist < closestDist) {
-                                closestDist = dist;
-                                closestObj = i;
-                            }
-                        }
-                    }
-                    selectedObj = closestObj; 
+            Camera previewCamera;
+            previewCamera.SetProjection(m_editorUI.State.actorViewerFov, previewWidth / previewHeight, 0.05f, 5000.0f);
+            previewCamera.SetLookAt(previewPosition, previewTarget);
+
+            std::vector<GameObject> previewObjects;
+            previewObjects.reserve(2);
+
+            if (m_editorUI.State.actorViewerShowFloor && m_assets.size() > 2) {
+                GameObject floor;
+                floor.name = "PreviewFloor";
+                floor.position = {0.0f, -m_actorViewerBoundsExtents.y - 0.02f, 0.0f};
+                const float floorScale = (std::max)(1.5f, m_actorViewerBoundsRadius * 0.7f);
+                floor.scale = {floorScale, 1.0f, floorScale};
+                floor.color = {0.72f, 0.74f, 0.78f, 1.0f};
+                floor.asset = m_assets[2].get();
+                previewObjects.push_back(floor);
+            }
+
+            GameObject previewObject;
+            previewObject.name = "PreviewAsset";
+            previewObject.position = centeredOffset;
+            previewObject.scale = {1.0f, 1.0f, 1.0f};
+            previewObject.color = {0.82f, 0.84f, 0.88f, 1.0f};
+            previewObject.asset = m_actorViewerAsset.get();
+            previewObject.assignedMaterial = m_actorViewerMaterial;
+            previewObjects.push_back(previewObject);
+
+            const XMMATRIX lightSpace = XMMatrixIdentity();
+            const XMFLOAT3 lightDir = {-0.45f, -0.82f, 0.35f};
+            m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), previewObjects, previewCamera,
+                                    static_cast<int>(previewWidth), static_cast<int>(previewHeight),
+                                    lightSpace, lightDir, 1.45f, nullptr, m_bindlessManager.GetHeap(),
+                                    m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+                                    m_frameHeapOffset, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
+
+            if (m_editorUI.State.actorViewerShowSky) {
+                m_skyboxPass.Render(
+                    m_commandList.Get(),
+                    m_device.Get(),
+                    m_primitives["Cube"],
+                    previewCamera,
+                    m_bindlessManager.GetHeap(),
+                    g_skyboxSrvIndex,
+                    {0.82f, 0.89f, 0.98f, 1.0f},
+                    {0.92f, 0.94f, 0.98f, 1.0f});
+            }
+        } else {
+            D3D12_VIEWPORT sceneViewport = { 0.0f, topH, viewW, viewH, 0.0f, 1.0f };
+            D3D12_RECT sceneScissor = { 0, (LONG)topH, (LONG)viewW, (LONG)(topH + viewH) };
+            m_commandList->RSSetViewports(1, &sceneViewport);
+            m_commandList->RSSetScissorRects(1, &sceneScissor);
+
+            bool isGizmoHovered = false;
+            if (m_editorUI.State.selectedObj >= 0 && m_editorUI.State.selectedObj < static_cast<int>(m_gameObjects.size())) {
+                if (m_gameObjects[m_editorUI.State.selectedObj].name.find("Sky") == std::string::npos) {
+                    m_uiContext.TransformGizmo(m_gameObjects[m_editorUI.State.selectedObj].position, m_camera, 0.0f, topH, viewW, viewH, isGizmoHovered);
                 }
             }
-        }
 
-        D3D12_VIEWPORT sceneViewport = { 0.0f, topH, viewW, viewH, 0.0f, 1.0f };
-        D3D12_RECT sceneScissor = { 0, (LONG)topH, (LONG)viewW, (LONG)(topH + viewH) };
-        
-        m_commandList->RSSetViewports(1, &sceneViewport);
-        m_commandList->RSSetScissorRects(1, &sceneScissor);
-        
-        m_camera.SetProjection(45.0f, viewW / viewH, 0.1f, 5000.0f);
-
-        XMMATRIX lightSpace = XMMatrixIdentity();
-        XMFLOAT3 lightDir = {0, -1, 0};
-        
-        m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), m_gameObjects, m_camera, static_cast<int>(viewW), static_cast<int>(viewH), 
-                                lightSpace, lightDir, 1.0f, nullptr, m_bindlessManager.GetHeap(), 
-                                m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV), 
-                                m_frameHeapOffset, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
-
-        // THE HDR FIX: Scan for the Sky Atmosphere Actor. If it exists in the outliner, render the HDR Pass!
-        bool skyRendered = false;
-        for (auto& o : m_gameObjects) {
-            if (o.name.find("Sky") != std::string::npos) {
-                skyRendered = true;
-                break; 
+            if (g_InputManager->IsMouseButtonPressed(0) && !m_editorUI.State.showPlaceActorsMenu && !m_editorUI.State.showImportPopup && !m_editorUI.State.showRenamePopup && !m_editorUI.State.showContextMenu && m_editorUI.State.draggedAssetIndex == -1) {
+                if (m_editorUI.State.mx >= 0 && m_editorUI.State.mx <= viewW && m_editorUI.State.my >= topH && m_editorUI.State.my <= topH + viewH) {
+                    if (!isGizmoHovered) {
+                        m_editorUI.State.selectedObj = RaycastViewportObject(m_editorUI.State.mx, m_editorUI.State.my, topH, viewW, viewH);
+                        m_editorUI.State.selectedContentAsset = -1;
+                    }
+                }
             }
-        }
 
-        if (skyRendered) {
-            m_skyboxPass.Render(m_commandList.Get(), m_device.Get(), m_primitives["Cube"], m_camera, m_bindlessManager.GetHeap(), g_skyboxSrvIndex);
+            XMMATRIX lightSpace = XMMatrixIdentity();
+            XMFLOAT3 lightDir = {0, -1, 0};
+            m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), m_gameObjects, m_camera, static_cast<int>(viewW), static_cast<int>(viewH), 
+                                    lightSpace, lightDir, 1.0f, nullptr, m_bindlessManager.GetHeap(), 
+                                    m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV), 
+                                    m_frameHeapOffset, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
+
+            const GameObject* skyObject = nullptr;
+            for (auto& o : m_gameObjects) {
+                if (o.name.find("Sky") != std::string::npos) {
+                    skyObject = &o;
+                    break;
+                }
+            }
+            if (skyObject) {
+                m_skyboxPass.Render(
+                    m_commandList.Get(),
+                    m_device.Get(),
+                    m_primitives["Cube"],
+                    m_camera,
+                    m_bindlessManager.GetHeap(),
+                    g_skyboxSrvIndex,
+                    skyObject->color,
+                    skyObject->skyHorizonColor);
+            }
         }
     }
 
+    // 4. Draw 2D UI Overlay
+    D3D12_VIEWPORT fullViewport = { 0.0f, 0.0f, w, h, 0.0f, 1.0f };
+    D3D12_RECT fullScissor = { 0, 0, (LONG)w, (LONG)h };
     m_commandList->RSSetViewports(1, &fullViewport);
     m_commandList->RSSetScissorRects(1, &fullScissor);
 
-    m_uiRenderer.Render(m_commandList.Get(), m_uiDrawList, (float)m_width, (float)m_height, m_bindlessManager.GetHeap());
+    m_uiRenderer.Render(m_commandList.Get(), m_uiDrawList, w, h, m_bindlessManager.GetHeap());
     m_uiDrawList.Clear();
 
+    // 5. Present
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     m_commandList->ResourceBarrier(1, &barrier);
@@ -630,23 +1925,27 @@ void DXRenderer::Render() {
     FlushGPU();
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
-    if (triggerEditorSwap) {
-        triggerEditorSwap = false;
-        
-        ShowWindow(m_hwnd, SW_HIDE);
-        Sleep(350); 
-
-        m_engineState = EngineState::Editor;
-        SetWindowTextW(m_hwnd, (L"Catalyst Editor - " + editorSwapProjName).c_str());
-
+    if (m_editorUI.State.triggerEditorSwap) {
+        m_editorUI.State.triggerEditorSwap = false;
+        m_engineState = EngineState::ProjectLoading;
+        m_projectLoadingOverlayPresented = false;
+        QueueProjectStartupSceneLoad(ResolveActiveProjectFilePath());
         SetWindowLongPtr(m_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW);
-
         int screenW = GetSystemMetrics(SM_CXSCREEN);
         int screenH = GetSystemMetrics(SM_CYSCREEN);
         SetWindowPos(m_hwnd, HWND_TOP, 0, 0, screenW, screenH, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
-        
         ShowWindow(m_hwnd, SW_MAXIMIZE);
+    } else if (m_engineState == EngineState::ProjectLoading && m_hasPendingProjectSceneLoad) {
+        if (!m_projectLoadingOverlayPresented) {
+            m_projectLoadingOverlayPresented = true;
+        } else {
+            ProcessPendingProjectSceneLoad();
+            m_engineState = EngineState::Editor;
+            m_projectLoadingOverlayPresented = false;
+        }
     }
+
+    RefreshWindowTitle();
 }
 
 void DXRenderer::CreateDefaultTextures() { 
@@ -688,6 +1987,10 @@ void DXRenderer::FlushGPU() {
 void DXRenderer::Shutdown() { 
     FlushGPU(); 
     m_uiRenderer.Shutdown();
+    CloseActorAssetViewer();
+    CloseMaterialAssetEditor();
+    m_materialCache.clear();
+    m_textureCache.clear();
     for (auto& pair : m_primitives) delete pair.second; 
     delete m_texWhite; delete m_texBlack; delete m_texNormal; 
 }

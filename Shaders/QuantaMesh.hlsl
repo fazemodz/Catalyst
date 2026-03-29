@@ -34,14 +34,16 @@ struct ObjectData {
     uint indexCount;             
     uint startIndexLocation;     
     int baseVertexLocation;      
-    uint padding;                
+    uint albedoIndex;
+    uint normalIndex;
+    uint metallicIndex;
+    uint roughnessIndex;
+    uint padding[5];
 };
 
 StructuredBuffer<ObjectData> ObjectBuffer : register(t0);
 Texture2D BindlessTextures[1024] : register(t0, space1);
 SamplerState LinearSampler : register(s0);
-Texture2D ShadowMap : register(t7);
-SamplerComparisonState ShadowSampler : register(s1);
 
 struct VS_IN {
     float3 pos : POSITION;
@@ -81,42 +83,36 @@ PS_IN VSMain(VS_IN input) {
 }
 
 float ShadowCalculation(float4 worldPos) {
-    float shadow = 0.0f; 
-    
-    float4 lightSpacePos = mul(worldPos, lightSpaceMatrix);
-    float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
-    projCoords.x =  projCoords.x * 0.5f + 0.5f;
-    projCoords.y = -projCoords.y * 0.5f + 0.5f;
-    if(projCoords.z > 1.0f) {
-        return 1.0f; 
-    }
-
-    float currentDepth = projCoords.z;
-    float bias = max(0.005f * (1.0f - dot(float3(0,1,0), -lightDir)), 0.001f);
-    
-    float2 texelSize = 1.0f / 2048.0f; 
-    
-    [unroll]
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            float2 uv = projCoords.xy + float2(x,y) * texelSize;
-            shadow += ShadowMap.SampleCmpLevelZero(ShadowSampler, uv, currentDepth - bias);
-        }
-    }
-    return shadow / 9.0f;
+    // The shadow map path is not currently bound through the active descriptor heap
+    // for this pass, so sampling it here produces invalid lighting on planes/floors.
+    // Keep the lighting path stable until shadows are fully wired back in.
+    return 1.0f;
 }
 
 float4 PSMain(PS_IN input) : SV_TARGET {
-    float4 albedo = BindlessTextures[albedoIndex].Sample(LinearSampler, input.uv) * input.color;
-    
-    float3 norm = normalize(input.normal);
-    float diff = max(dot(norm, -lightDir), 0.0);
-    
+    ObjectData obj = ObjectBuffer[input.instanceID];
+    float4 albedo = BindlessTextures[obj.albedoIndex].Sample(LinearSampler, input.uv) * input.color;
+    float3 tangent = normalize(input.tangent);
+    float3 normal = normalize(input.normal);
+    tangent = normalize(tangent - normal * dot(tangent, normal));
+    float3 bitangent = normalize(cross(normal, tangent));
+
+    float3 sampledNormal = BindlessTextures[obj.normalIndex].Sample(LinearSampler, input.uv).xyz * 2.0f - 1.0f;
+    float3x3 tbn = float3x3(tangent, bitangent, normal);
+    float3 shadingNormal = normalize(mul(sampledNormal, tbn));
+
+    float roughnessValue = saturate(BindlessTextures[obj.roughnessIndex].Sample(LinearSampler, input.uv).r);
+    float diff = max(dot(shadingNormal, -lightDir), 0.0);
     float shadow = ShadowCalculation(input.worldPos);
-    
     float3 ambient = float3(0.2, 0.2, 0.2) * albedo.rgb;
     float3 diffuse = diff * albedo.rgb * lightIntensity * shadow;
-    
-    float3 finalColor = ambient + diffuse;
+
+    float3 viewDir = normalize(cameraPos - input.worldPos.xyz);
+    float3 halfVector = normalize(viewDir - lightDir);
+    float specPower = lerp(64.0f, 8.0f, roughnessValue);
+    float specStrength = (1.0f - roughnessValue) * 0.35f;
+    float specular = pow(max(dot(shadingNormal, halfVector), 0.0f), specPower) * specStrength;
+
+    float3 finalColor = ambient + diffuse + specular * lightIntensity * shadow;
     return float4(finalColor, albedo.a);
 }

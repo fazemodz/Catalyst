@@ -9,7 +9,7 @@ class SkyboxPass {
 public:
     void Initialize(ID3D12Device* device);
     void LoadHDR(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const wchar_t* filename);
-    void Render(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, Mesh* cubeMesh, Camera& camera, ID3D12DescriptorHeap* bindlessHeap, uint32_t hdrIndex);
+    void Render(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, Mesh* cubeMesh, Camera& camera, ID3D12DescriptorHeap* bindlessHeap, uint32_t hdrIndex, const DirectX::XMFLOAT4& zenithColor, const DirectX::XMFLOAT4& horizonColor);
     
     ID3D12Resource* GetHDRResource() { return m_skyTexture.Get(); }
 

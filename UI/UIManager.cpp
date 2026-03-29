@@ -7,6 +7,7 @@
 #include <thread> 
 #include <chrono> 
 #include "ModelLoader.h"
+#include "../Physics/PhysicsSystem.h"
 #include "Texture.h"
 
 using namespace DirectX;
@@ -76,7 +77,7 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, std::vector<std::sh
     ImGuiIO& io = ImGui::GetIO(); float menuHeight = 22.0f; float rightBarW = 300.0f; float bottomH = 250.0f;
     float screenW = io.DisplaySize.x; float screenH = io.DisplaySize.y; float viewportW = screenW - rightBarW; float viewportH = screenH - bottomH - menuHeight;
 
-    auto HandleAssetDrop = [&](const ImGuiPayload* payload) { int assetID = *(const int*)payload->Data; for(auto& a : assets) { if(a->id == assetID) { GameObject newObj; newObj.name = a->name + (a->type == AssetType::TextureHDR ? " Environment" : " Instance"); newObj.asset = a.get(); newObj.type = (a->type == AssetType::TextureHDR) ? ObjectType::Skybox : ObjectType::Mesh; gameObjects.push_back(newObj); break; } } };
+    auto HandleAssetDrop = [&](const ImGuiPayload* payload) { int assetID = *(const int*)payload->Data; for(auto& a : assets) { if(a->id == assetID) { GameObject newObj; newObj.name = a->name + (a->type == AssetType::TextureHDR ? " Environment" : " Instance"); newObj.asset = a.get(); newObj.type = (a->type == AssetType::TextureHDR) ? ObjectType::Skybox : ObjectType::Mesh; if (newObj.type == ObjectType::Mesh) { PhysicsSystem::InitializeDefaultCollider(newObj, false, true); } gameObjects.push_back(newObj); break; } } };
 
     if (ImGui::GetDragDropPayload() != nullptr) {
         ImGui::SetNextWindowPos(ImVec2(0, menuHeight)); ImGui::SetNextWindowSize(ImVec2(viewportW, viewportH));
@@ -91,7 +92,7 @@ void UIManager::Update(std::vector<GameObject>& gameObjects, std::vector<std::sh
         if (ImGui::BeginMenu("Place Actors")) {
             ImGui::SeparatorText("Basic Objects");
             
-            auto SpawnPrimitive = [&](const std::string& assetName, const std::string& objName) { Asset* asset = FindAssetByName(assets, assetName); if (asset) { GameObject newObj; newObj.name = objName; newObj.asset = asset; newObj.type = ObjectType::Mesh; gameObjects.push_back(newObj); } };
+            auto SpawnPrimitive = [&](const std::string& assetName, const std::string& objName) { Asset* asset = FindAssetByName(assets, assetName); if (asset) { GameObject newObj; newObj.name = objName; newObj.asset = asset; newObj.type = ObjectType::Mesh; PhysicsSystem::InitializeDefaultCollider(newObj, false, true); gameObjects.push_back(newObj); } };
             if (ImGui::MenuItem("Cube")) SpawnPrimitive("Basic Cube", "Cube"); 
             if (ImGui::MenuItem("Sphere")) SpawnPrimitive("Basic Sphere", "Sphere"); 
             if (ImGui::MenuItem("Plane")) SpawnPrimitive("Basic Plane", "Plane");

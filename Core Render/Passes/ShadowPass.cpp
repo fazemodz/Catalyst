@@ -58,6 +58,7 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
     commandList->SetPipelineState(m_shadowPipelineState.Get());
     commandList->SetGraphicsRootSignature(m_shadowRootSignature.Get());
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    Mesh* lastBoundMesh = nullptr;
 
     for (int i = 0; i < gameObjects.size(); i++) {
         const GameObject& obj = gameObjects[i]; 
@@ -65,8 +66,13 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
         Mesh* meshToDraw = obj.asset ? obj.asset->mesh : nullptr; 
         if (!meshToDraw) continue;
 
-        D3D12_VERTEX_BUFFER_VIEW vbv = meshToDraw->GetVertexView(); D3D12_INDEX_BUFFER_VIEW ibv = meshToDraw->GetIndexView(); 
-        commandList->IASetVertexBuffers(0, 1, &vbv); commandList->IASetIndexBuffer(&ibv);
+        if (meshToDraw != lastBoundMesh) {
+            D3D12_VERTEX_BUFFER_VIEW vbv = meshToDraw->GetVertexView();
+            D3D12_INDEX_BUFFER_VIEW ibv = meshToDraw->GetIndexView();
+            commandList->IASetVertexBuffers(0, 1, &vbv);
+            commandList->IASetIndexBuffer(&ibv);
+            lastBoundMesh = meshToDraw;
+        }
 
         DirectX::XMMATRIX mScale = DirectX::XMMatrixScaling(obj.scale.x, obj.scale.y, obj.scale.z); 
         DirectX::XMMATRIX mRot = DirectX::XMMatrixRotationRollPitchYaw(obj.rotation.x, obj.rotation.y, obj.rotation.z); 

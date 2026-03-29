@@ -6,7 +6,8 @@ class Camera {
 public:
     Camera();
     void SetProjection(float fovDegrees, float aspectRatio, float nearZ, float farZ);
-    void Update(float deltaTime);
+    void SetLookAt(const DirectX::XMFLOAT3& position, const DirectX::XMFLOAT3& target, const DirectX::XMFLOAT3& up = {0.0f, 1.0f, 0.0f});
+    void Update(float deltaTime, bool allowInteraction);
     
     DirectX::XMMATRIX GetViewMatrix() const;
     DirectX::XMMATRIX GetProjectionMatrix() const;

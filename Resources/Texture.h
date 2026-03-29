@@ -11,9 +11,11 @@ class Texture {
 public:
     // Standard Texture Loading
     void Load(const std::string& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue);
+    void Load(const std::wstring& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue);
     
     // HDR Loading for Skyboxes
     void LoadHDR(const std::string& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue);
+    void LoadHDR(const std::wstring& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue);
     
     // Fallback/Utility Creation
     void Create1x1Color(ID3D12Device* device, ID3D12CommandQueue* commandQueue, uint32_t color);

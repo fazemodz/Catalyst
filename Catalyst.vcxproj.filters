@@ -102,6 +102,21 @@
     <ClCompile Include="Launcher.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\EditorUI.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\EditorUIEditor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\EditorUILauncher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\EditorUIDragDrop.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\EditorUIViewers.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\Input\InputManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -112,6 +127,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="UI\Render\UIRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Physics\PhysicsSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Physics\PhysicsTypes.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -132,6 +153,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Scene\GameObject.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\EditorUI.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\EditorUIInternal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\UIManager.h">
@@ -192,6 +219,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\Render\UIRenderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\PhysicsSystem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Physics\PhysicsTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

@@ -17,7 +17,11 @@ struct ObjectData {
     uint indexCount;             
     uint startIndexLocation;     
     int baseVertexLocation;      
-    uint padding;                
+    uint albedoIndex;
+    uint normalIndex;
+    uint metallicIndex;
+    uint roughnessIndex;
+    uint padding[5];
 };
 
 // The new 24-byte structure containing the Root Constant ID at the top!

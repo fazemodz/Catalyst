@@ -3,17 +3,21 @@
 #include <DirectXTex.h>
 #include <iostream>
 #include <stdexcept>
+#include <cstring>
 
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "d3d12.lib")
 
 void Texture::Load(const std::string& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue) {
-    std::wstring wstr = std::wstring(filename.begin(), filename.end());
+    Load(std::wstring(filename.begin(), filename.end()), device, commandQueue);
+}
+
+void Texture::Load(const std::wstring& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue) {
     DirectX::ScratchImage image;
-    HRESULT hr = DirectX::LoadFromWICFile(wstr.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    HRESULT hr = DirectX::LoadFromWICFile(filename.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
     
     if (FAILED(hr)) {
-        throw std::runtime_error("Failed to load texture file: " + filename);
+        throw std::runtime_error("Failed to load texture file.");
     }
 
     const DirectX::Image* img = image.GetImage(0, 0, 0);
@@ -102,12 +106,15 @@ void Texture::Load(const std::string& filename, ID3D12Device* device, ID3D12Comm
 }
 
 void Texture::LoadHDR(const std::string& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue) {
-    std::wstring wstr = std::wstring(filename.begin(), filename.end());
+    LoadHDR(std::wstring(filename.begin(), filename.end()), device, commandQueue);
+}
+
+void Texture::LoadHDR(const std::wstring& filename, ID3D12Device* device, ID3D12CommandQueue* commandQueue) {
     DirectX::ScratchImage image;
-    HRESULT hr = DirectX::LoadFromHDRFile(wstr.c_str(), nullptr, image);
+    HRESULT hr = DirectX::LoadFromHDRFile(filename.c_str(), nullptr, image);
     
     if (FAILED(hr)) {
-        throw std::runtime_error("Failed to load HDR file: " + filename);
+        throw std::runtime_error("Failed to load HDR file.");
     }
 
     const DirectX::Image* img = image.GetImage(0, 0, 0);
@@ -216,7 +223,7 @@ void Texture::Create1x1Color(ID3D12Device* device, ID3D12CommandQueue* commandQu
     
     D3D12_RESOURCE_DESC bufferDesc = {};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = 4;
+    bufferDesc.Width = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
     bufferDesc.Height = 1;
     bufferDesc.DepthOrArraySize = 1;
     bufferDesc.MipLevels = 1;
@@ -230,6 +237,7 @@ void Texture::Create1x1Color(ID3D12Device* device, ID3D12CommandQueue* commandQu
 
     void* mappedData;
     uploadBuffer->Map(0, nullptr, &mappedData);
+    memset(mappedData, 0, static_cast<size_t>(bufferDesc.Width));
     memcpy(mappedData, &color, 4);
     uploadBuffer->Unmap(0, nullptr);
 

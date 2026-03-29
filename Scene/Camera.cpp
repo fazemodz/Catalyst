@@ -21,11 +21,26 @@ void Camera::SetProjection(float fovDegrees, float aspectRatio, float nearZ, flo
     m_projMatrix = XMMatrixPerspectiveFovLH(XMConvertToRadians(fovDegrees), aspectRatio, nearZ, farZ);
 }
 
-void Camera::Update(float deltaTime) {
+void Camera::SetLookAt(const XMFLOAT3& position, const XMFLOAT3& target, const XMFLOAT3& upVector) {
+    m_position = position;
+
+    const XMVECTOR pos = XMLoadFloat3(&position);
+    const XMVECTOR targetPos = XMLoadFloat3(&target);
+    const XMVECTOR up = XMVector3Normalize(XMLoadFloat3(&upVector));
+    const XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(targetPos, pos));
+    const XMVECTOR right = XMVector3Normalize(XMVector3Cross(up, forward));
+    const XMVECTOR correctedUp = XMVector3Normalize(XMVector3Cross(forward, right));
+
+    XMStoreFloat3(&m_forward, forward);
+    XMStoreFloat3(&m_right, right);
+    XMStoreFloat3(&m_up, correctedUp);
+    m_viewMatrix = XMMatrixLookAtLH(pos, targetPos, correctedUp);
+}
+
+void Camera::Update(float deltaTime, bool allowInteraction) {
     if (!g_InputManager) return;
 
-    // THE PROPER FIX: Only enable camera look/movement if holding Right-Click (Button 1)
-    if (g_InputManager->IsMouseButtonPressed(1)) {
+    if (allowInteraction && g_InputManager->IsMouseButtonPressed(1)) {
         m_isDragging = true;
         m_lastMouseX = g_InputManager->GetMouseX();
         m_lastMouseY = g_InputManager->GetMouseY();

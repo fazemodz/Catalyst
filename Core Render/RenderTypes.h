@@ -29,7 +29,11 @@ struct ObjectData {
     uint32_t indexCount;
     uint32_t startIndexLocation;
     int32_t baseVertexLocation;
-    uint32_t padding;
+    uint32_t albedoIndex;
+    uint32_t normalIndex;
+    uint32_t metallicIndex;
+    uint32_t roughnessIndex;
+    uint32_t padding[5];
 };
 
 // Material-specific data (The "Unreal-style" property block)

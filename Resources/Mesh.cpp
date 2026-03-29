@@ -21,7 +21,7 @@ Mesh::Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const Verte
     D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD };
     D3D12_RESOURCE_DESC vDesc = { D3D12_RESOURCE_DIMENSION_BUFFER, 0, vbSize, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
     
-    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_vertexBuffer));
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &vDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_vertexBuffer));
     device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &vDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_vertexUploadBuffer));
     
     // Copy Vertex Data
@@ -29,17 +29,35 @@ Mesh::Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const Verte
     m_vertexUploadBuffer->Map(0, nullptr, &pData);
     memcpy(pData, vertices, vbSize);
     m_vertexUploadBuffer->Unmap(0, nullptr);
+
+    D3D12_RESOURCE_BARRIER vertexCopyBarrier = {};
+    vertexCopyBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    vertexCopyBarrier.Transition.pResource = m_vertexBuffer.Get();
+    vertexCopyBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    vertexCopyBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    vertexCopyBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &vertexCopyBarrier);
+
     cmdList->CopyBufferRegion(m_vertexBuffer.Get(), 0, m_vertexUploadBuffer.Get(), 0, vbSize);
 
     // Create Default and Upload Heaps for Indices
     D3D12_RESOURCE_DESC iDesc = { D3D12_RESOURCE_DIMENSION_BUFFER, 0, ibSize, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
-    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &iDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_indexBuffer));
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &iDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_indexBuffer));
     device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &iDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_indexUploadBuffer));
 
     // Copy Index Data
     m_indexUploadBuffer->Map(0, nullptr, &pData);
     memcpy(pData, indices, ibSize);
     m_indexUploadBuffer->Unmap(0, nullptr);
+
+    D3D12_RESOURCE_BARRIER indexCopyBarrier = {};
+    indexCopyBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    indexCopyBarrier.Transition.pResource = m_indexBuffer.Get();
+    indexCopyBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    indexCopyBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    indexCopyBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &indexCopyBarrier);
+
     cmdList->CopyBufferRegion(m_indexBuffer.Get(), 0, m_indexUploadBuffer.Get(), 0, ibSize);
 
     // Transition Buffers
@@ -86,13 +104,20 @@ ComPtr<ID3D12Resource> Mesh::CreateDefaultBuffer(ID3D12Device* device, ID3D12Com
     ComPtr<ID3D12Resource> defaultBuffer;
     D3D12_HEAP_PROPERTIES defaultHeap = { D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 1, 1 };
     D3D12_RESOURCE_DESC bufferDesc = { D3D12_RESOURCE_DIMENSION_BUFFER, 0, byteSize, 1, 1, 1, DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
-    if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&defaultBuffer)))) throw std::runtime_error("Failed to create Default Buffer");
+    if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&defaultBuffer)))) throw std::runtime_error("Failed to create Default Buffer");
     D3D12_HEAP_PROPERTIES uploadHeap = { D3D12_HEAP_TYPE_UPLOAD, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 1, 1 };
     if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer)))) throw std::runtime_error("Failed to create Upload Buffer");
     D3D12_SUBRESOURCE_DATA subResourceData = {}; subResourceData.pData = initData; subResourceData.RowPitch = static_cast<LONG_PTR>(byteSize); subResourceData.SlicePitch = subResourceData.RowPitch;
     void* pData; uploadBuffer->Map(0, nullptr, &pData); memcpy(pData, initData, byteSize); uploadBuffer->Unmap(0, nullptr);
     ComPtr<ID3D12CommandAllocator> cmdAlloc; device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
     ComPtr<ID3D12GraphicsCommandList> cmdList; device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&cmdList));
+    D3D12_RESOURCE_BARRIER copyBarrier = {};
+    copyBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    copyBarrier.Transition.pResource = defaultBuffer.Get();
+    copyBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    copyBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    copyBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &copyBarrier);
     cmdList->CopyBufferRegion(defaultBuffer.Get(), 0, uploadBuffer.Get(), 0, byteSize);
     D3D12_RESOURCE_BARRIER barrier = {}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; barrier.Transition.pResource = defaultBuffer.Get(); barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST; barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
     cmdList->ResourceBarrier(1, &barrier); cmdList->Close();

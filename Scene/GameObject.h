@@ -1,6 +1,9 @@
 #pragma once
 #include "Asset.h"
+#include "../Physics/PhysicsTypes.h"
 #include <directxmath.h>
+
+class Material;
 
 enum class ObjectType { Mesh, Light, Skybox, PostProcessVolume };
 
@@ -24,9 +27,11 @@ struct GameObject {
 
     // Rendering
     DirectX::XMFLOAT4 color = {1,1,1,1};
+    DirectX::XMFLOAT4 skyHorizonColor = {1,1,1,1};
 
     // Master Asset
     Asset* asset = nullptr;
+    Material* assignedMaterial = nullptr;
 
     // Material Overrides
     Texture* overrideAlbedo    = nullptr;
@@ -40,4 +45,5 @@ struct GameObject {
     float lightIntensity = 1.0f;
 
     PostProcessSettings ppSettings;
+    PhysicsComponent physics;
 };

@@ -37,12 +37,17 @@ void PostProcessPass::CreatePipeline(ID3D12Device* device) {
     hr = D3DCompileFromFile(L"Shaders/postprocess.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG, 0, &ps, &err); 
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "PP PS Failed");
 
-    D3D12_ROOT_PARAMETER rp[2]; D3D12_DESCRIPTOR_RANGE range; range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; range.NumDescriptors = 1; range.BaseShaderRegister = 0; range.RegisterSpace = 0; range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_ROOT_PARAMETER rp[2] = {};
+    D3D12_DESCRIPTOR_RANGE range = {};
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; range.NumDescriptors = 1; range.BaseShaderRegister = 0; range.RegisterSpace = 0; range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; rp[0].DescriptorTable.NumDescriptorRanges = 1; rp[0].DescriptorTable.pDescriptorRanges = &range; rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; rp[1].Constants.ShaderRegister = 0; rp[1].Constants.RegisterSpace = 0; rp[1].Constants.Num32BitValues = 8; rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    D3D12_STATIC_SAMPLER_DESC sampler = {}; sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT; sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC sampler = {}; sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT; sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; sampler.ShaderRegister = 0; sampler.RegisterSpace = 0; sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {}; rsDesc.NumParameters = 2; rsDesc.pParameters = rp; rsDesc.NumStaticSamplers = 1; rsDesc.pStaticSamplers = &sampler; rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-    ComPtr<ID3DBlob> sig; D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr); device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&m_postProcessRootSignature));
+    ComPtr<ID3DBlob> sig, rsErr;
+    hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &rsErr);
+    if(FAILED(hr)) ThrowIfFailed(hr, rsErr ? (char*)rsErr->GetBufferPointer() : "PP RS Serialize Failed");
+    ThrowIfFailed(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&m_postProcessRootSignature)), "Post-process root signature creation failed");
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {}; pso.InputLayout = { nullptr, 0 }; pso.pRootSignature = m_postProcessRootSignature.Get(); pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() }; pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() }; pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID; pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; pso.DepthStencilState.DepthEnable = FALSE; pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL; pso.SampleMask = UINT_MAX; pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; pso.NumRenderTargets = 1; pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pso.SampleDesc.Count = 1;
     ThrowIfFailed(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_postProcessPipelineState)));
 }
