@@ -119,7 +119,6 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
         { "TANGENT",  0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } 
     };
     
-    // FIX: ADDED 6th PARAMETER FOR ROOT CONSTANT
     D3D12_ROOT_PARAMETER rpQ[6] = {}; 
     rpQ[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; rpQ[0].Descriptor.ShaderRegister = 0; rpQ[0].Descriptor.RegisterSpace = 0; rpQ[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rpQ[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; rpQ[1].Descriptor.ShaderRegister = 1; rpQ[1].Descriptor.RegisterSpace = 0; rpQ[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -148,12 +147,9 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     hr = device->CreateRootSignature(0, sigQ->GetBufferPointer(), sigQ->GetBufferSize(), IID_PPV_ARGS(&m_quantaRootSignature));
     ThrowIfFailed(hr, "Quanta root signature creation failed");
     
-    // ==========================================
-    // ⭐ FIX: NEW ROOT CONSTANT COMMAND SIGNATURE
-    // ==========================================
     D3D12_INDIRECT_ARGUMENT_DESC argDesc[2] = {}; 
     argDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-    argDesc[0].Constant.RootParameterIndex = 5; // Matches rpQ[5]!
+    argDesc[0].Constant.RootParameterIndex = 5;
     argDesc[0].Constant.DestOffsetIn32BitValues = 0;
     argDesc[0].Constant.Num32BitValuesToSet = 1;
     argDesc[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
@@ -161,7 +157,7 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     D3D12_COMMAND_SIGNATURE_DESC csDesc = {}; 
     csDesc.NumArgumentDescs = 2; 
     csDesc.pArgumentDescs = argDesc; 
-    csDesc.ByteStride = 24; // 4 bytes for ID + 20 bytes for DrawIndexed
+    csDesc.ByteStride = 24; 
     
     // Pass the Quanta Root Sig to bind the constant!
     ThrowIfFailed(device->CreateCommandSignature(&csDesc, m_quantaRootSignature.Get(), IID_PPV_ARGS(&m_commandSignature)));
@@ -190,6 +186,7 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
 
     std::map<Mesh*, std::vector<const GameObject*>> meshGroups;
     for (const auto& obj : gameObjects) {
+        if (!obj.enabled) continue;
         if (obj.type == ObjectType::Skybox || obj.type == ObjectType::PostProcessVolume) continue;
         Mesh* mesh = (obj.asset && obj.asset->mesh) ? obj.asset->mesh : defaultSphereMesh;
         if (mesh) meshGroups[mesh].push_back(&obj);

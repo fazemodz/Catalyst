@@ -62,6 +62,18 @@ bool IsUIBlueprintAssetName(const std::string& filename) {
     return HasExtension(filename, L".catalystuiblueprint");
 }
 
+bool IsCppSourceAssetName(const std::string& filename) {
+    return HasExtension(filename, L".cpp");
+}
+
+bool IsCppHeaderAssetName(const std::string& filename) {
+    return HasExtension(filename, L".h");
+}
+
+bool IsCppAssetName(const std::string& filename) {
+    return IsCppSourceAssetName(filename) || IsCppHeaderAssetName(filename);
+}
+
 bool WriteEmptySceneMapFile(const fs::path& outputPath) {
     if (outputPath.empty()) {
         return false;
@@ -249,6 +261,64 @@ bool CreateEmptyUIBlueprintAsset(const std::wstring& targetDirectory, std::wstri
 
         if (createdPath) {
             *createdPath = outputPath.wstring();
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CreateEmptyCppScriptAsset(const std::wstring& targetDirectory, std::wstring* createdSourcePath, std::wstring* createdHeaderPath, const std::wstring& requestedBaseName) {
+    if (targetDirectory.empty()) {
+        return false;
+    }
+
+    try {
+        const fs::path targetFolder(targetDirectory);
+        if (!fs::exists(targetFolder) || !fs::is_directory(targetFolder)) {
+            return false;
+        }
+
+        std::wstring finalBaseName = requestedBaseName.empty() ? L"NewScript" : requestedBaseName;
+        int counter = 1;
+        while (fs::exists(targetFolder / (finalBaseName + L".cpp")) || fs::exists(targetFolder / (finalBaseName + L".h"))) {
+            const std::wstring stem = requestedBaseName.empty() ? L"NewScript" : requestedBaseName;
+            finalBaseName = stem + L"_" + std::to_wstring(counter++);
+        }
+
+        const fs::path sourcePath = targetFolder / (finalBaseName + L".cpp");
+        const std::string className = ToDisplayString(finalBaseName);
+
+        const std::string sourceContents =
+            "#include \"CatalystAPI.h\"\n\n"
+            "class " + className + " final : public Catalyst::NativeScript {\n"
+            "public:\n"
+            "    const char* GetClassName() const override {\n"
+            "        return \"" + className + "\";\n"
+            "    }\n\n"
+            "    void OnStart() override {\n"
+            "    PrintToConsole(\"" + className + " spawned\");\n"
+            "    }\n\n"
+            "    void OnUpdate(float deltaTime) override {\n"
+            "    if (GetKeyDown(Catalyst::Key::W)) {\n"
+            "        Translate(0.0f, 0.0f, 180.0f * deltaTime);\n"
+            "    }\n"
+            "    }\n"
+            "};\n\n"
+            "REGISTER_SCRIPT(" + className + ")\n";
+
+        std::ofstream sourceFile(sourcePath, std::ios::binary | std::ios::trunc);
+        if (!sourceFile.is_open()) {
+            return false;
+        }
+        sourceFile.write(sourceContents.data(), static_cast<std::streamsize>(sourceContents.size()));
+        sourceFile.close();
+
+        if (createdSourcePath) {
+            *createdSourcePath = sourcePath.wstring();
+        }
+        if (createdHeaderPath) {
+            createdHeaderPath->clear();
         }
         return true;
     } catch (...) {

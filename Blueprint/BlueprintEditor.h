@@ -117,6 +117,7 @@ private:
         std::string displayText;
         DirectX::XMFLOAT4 tint = {0.2f, 0.24f, 0.30f, 1.0f};
         std::wstring assetPath;
+        bool visibleInGame = true;
         bool canDelete = true;
     };
 

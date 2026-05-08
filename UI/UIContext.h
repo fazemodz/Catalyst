@@ -13,6 +13,7 @@ public:
     void SetModalRegion(float x, float y, float width, float height);
     void ClearModalRegion();
     bool IsModalActive() const { return m_modalRegionActive; }
+    void AddText(const std::string& text, float x, float y, uint32_t color = 0xFFFFFFFF, float wrapWidth = 0.0f);
     
     // THE FIX: Added bool& isHovered parameter
     bool TransformGizmo(DirectX::XMFLOAT3& position, Camera& camera, float viewX, float viewY, float viewW, float viewH, bool& isHovered);

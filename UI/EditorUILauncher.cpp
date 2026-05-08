@@ -43,7 +43,7 @@ void EditorUI::DrawLauncher(DXRenderer* renderer, float w, float h) {
     };
 
     const float launcherMenuW = 180.0f;
-    const float launcherMenuH = 70.0f;
+    const float launcherMenuH = 102.0f;
     const float launcherMenuX = (std::min)(State.launcherProjectMenuX, w - launcherMenuW - 10.0f);
     const float launcherMenuY = (std::min)(State.launcherProjectMenuY, h - launcherMenuH - 10.0f);
     const bool launcherOverlayActive = State.showLauncherProjectMenu || State.showDeleteProjectConfirm;
@@ -178,7 +178,14 @@ void EditorUI::DrawLauncher(DXRenderer* renderer, float w, float h) {
             drawList.AddRectFilled(launcherMenuX, launcherMenuY, launcherMenuW, launcherMenuH, 0xFF252525);
             drawList.AddRectFilled(launcherMenuX, launcherMenuY, launcherMenuW, 2.0f, 0xFFD77800);
             drawList.AddText(fontMgr, "Project Actions", launcherMenuX + 10.0f, launcherMenuY + 18.0f, 0xFFAAAAAA);
-            if (uiCtx.Button("Delete Project...", launcherMenuX + 8.0f, launcherMenuY + 30.0f, launcherMenuW - 16.0f, 26.0f, 0xFF3A2020, 0xFF6C2E2E, 0xFF7A3434)) {
+            if (uiCtx.Button("Open Code Solution", launcherMenuX + 8.0f, launcherMenuY + 30.0f, launcherMenuW - 16.0f, 26.0f, 0xFF243B5E, 0xFF35537B, 0xFF1C2D47)) {
+                const bool didOpenCode = OpenProjectCodeSolution(State.launcherProjectMenuPath);
+                State.launcherStatusMessage = didOpenCode ? "Opened code solution" : "Code solution open failed";
+                State.launcherStatusColor = didOpenCode ? 0xFF89D185 : 0xFFE07A7A;
+                State.launcherStatusUntil = GetTickCount() + 3200;
+                State.showLauncherProjectMenu = false;
+            }
+            if (uiCtx.Button("Delete Project...", launcherMenuX + 8.0f, launcherMenuY + 60.0f, launcherMenuW - 16.0f, 26.0f, 0xFF3A2020, 0xFF6C2E2E, 0xFF7A3434)) {
                 State.showDeleteProjectConfirm = true;
                 State.deleteProjectPath = State.launcherProjectMenuPath;
                 State.deleteProjectName = State.launcherProjectMenuName;

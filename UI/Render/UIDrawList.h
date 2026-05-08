@@ -34,6 +34,7 @@ public:
     std::vector<UIDrawCommand> Commands;
 
     void Clear();
+    UIClipRect GetActiveClipRect() const;
     void PushClipRect(float x, float y, float width, float height);
     void PopClipRect();
     void AddRectFilled(float x, float y, float width, float height, uint32_t color);
@@ -44,7 +45,6 @@ public:
     void AddText(FontManager& fontManager, const std::string& text, float x, float y, uint32_t color, float wrapWidth = 0.0f);
 
 private:
-    UIClipRect GetActiveClipRect() const;
     void PushTextureBatch(uint32_t textureID);
     std::vector<UIClipRect> m_clipRectStack;
 };

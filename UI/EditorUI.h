@@ -16,6 +16,12 @@ struct BrowserItem {
     bool isFolder;
 };
 
+struct LogEntry {
+    std::string timestamp;
+    std::string message;
+    uint32_t color;
+};
+
 struct ActorViewerMeshLoadJob {
     std::atomic<bool> completed{false};
     MeshData meshData;
@@ -40,6 +46,10 @@ struct EditorUIState {
     bool pendingDragWasSelected = false;
     int pendingDragStartMouseX = 0;
     int pendingDragStartMouseY = 0;
+    float folderTreeScrollOffset = 0.0f;
+    float assetBrowserScrollOffset = 0.0f;
+    float outlinerScrollOffset = 0.0f;
+    float detailsScrollOffset = 0.0f;
     bool showImportPopup = false;
     std::wstring pendingImportPath = L"";
     std::string pendingImportName = "";
@@ -55,6 +65,11 @@ struct EditorUIState {
     bool renameTargetIsFolder = false;
     std::string renameInputName = "";
     bool isRenameInputActive = false;
+    bool showNewScriptNamePopup = false;
+    std::string newScriptNameInput = "";
+    bool newScriptNameInputActive = false;
+    bool newScriptPopupJustOpened = false;
+    std::wstring newScriptTargetFolder = L"";
     bool showDeleteItemConfirm = false;
     std::wstring deleteItemPath = L"";
     std::wstring deleteItemName = L"";
@@ -80,6 +95,7 @@ struct EditorUIState {
     std::vector<ProjectInfo> recentProjects; 
     bool recentsLoaded = false;
     bool isPlaying = false;
+    bool standalonePlay = false;
     float playYOffset = 0.0f;
     std::string saveStatusMessage = "";
     uint32_t saveStatusColor = 0xFF9A9A9A;
@@ -87,6 +103,15 @@ struct EditorUIState {
     int mx = 0;
     int my = 0;
     bool showActorAssetViewer = false;
+    bool showAddComponentMenu = false;
+    int addComponentObjectIndex = -1;
+    float addComponentMenuX = 0.0f;
+    float addComponentMenuY = 0.0f;
+    bool showScriptClassPicker = false;
+    int scriptClassPickerObjectIndex = -1;
+    uint64_t scriptClassPickerComponentId = 0;
+    float scriptClassPickerX = 0.0f;
+    float scriptClassPickerY = 0.0f;
     std::wstring actorViewerPath = L"";
     std::string actorViewerTitle = "";
     std::string actorViewerSearch = "";
@@ -131,6 +156,18 @@ struct EditorUIState {
     std::string pendingAssetName = "";
     std::wstring pendingAssetSourcePath = L"";
     DirectX::XMFLOAT3 pendingSpawnPos = {0.0f, 0.0f, 0.0f};
+
+    int bottomPanelTab = 0;
+    std::vector<std::wstring> browserNavHistory;
+    std::vector<LogEntry> editorLog;
+    float logScrollOffset = 0.0f;
+    bool logScrollToBottom = false;
+
+    enum class BuildConfig {
+        Debug,
+        Release
+    };
+    BuildConfig buildConfig = BuildConfig::Release;
 };
 
 class DXRenderer;

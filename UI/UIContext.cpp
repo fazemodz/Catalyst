@@ -4,6 +4,20 @@
 #include <cmath>
 #include "Camera.h" 
 
+namespace {
+bool PointInRect(float px, float py, float x, float y, float width, float height) {
+    return px >= x && px <= (x + width) && py >= y && py <= (y + height);
+}
+
+bool PointInWidgetClip(float px, float py, float x, float y, float width, float height, const UIClipRect& clipRect) {
+    const float clipX = clipRect.Enabled ? (std::max)(x, clipRect.X) : x;
+    const float clipY = clipRect.Enabled ? (std::max)(y, clipRect.Y) : y;
+    const float clipRight = clipRect.Enabled ? (std::min)(x + width, clipRect.X + clipRect.Width) : (x + width);
+    const float clipBottom = clipRect.Enabled ? (std::min)(y + height, clipRect.Y + clipRect.Height) : (y + height);
+    return clipRight > clipX && clipBottom > clipY && PointInRect(px, py, clipX, clipY, clipRight - clipX, clipBottom - clipY);
+}
+}
+
 void UIContext::Initialize(UIDrawList* drawList, FontManager* fontManager, InputManager* inputManager) {
     m_drawList = drawList;
     m_fontManager = fontManager;
@@ -26,7 +40,24 @@ void UIContext::ClearModalRegion() {
     m_modalRegionHeight = 0.0f;
 }
 
+void UIContext::AddText(const std::string& text, float x, float y, uint32_t color, float wrapWidth) {
+    if (m_drawList && m_fontManager && !text.empty()) {
+        m_drawList->AddText(*m_fontManager, text, x, y, color, wrapWidth);
+    }
+}
+
 bool UIContext::IsInteractionAllowed(float x, float y, float width, float height) const {
+    if (m_drawList) {
+        const UIClipRect clipRect = m_drawList->GetActiveClipRect();
+        if (clipRect.Enabled) {
+            const float clipRight = clipRect.X + clipRect.Width;
+            const float clipBottom = clipRect.Y + clipRect.Height;
+            if ((x + width) <= clipRect.X || x >= clipRight || (y + height) <= clipRect.Y || y >= clipBottom) {
+                return false;
+            }
+        }
+    }
+
     if (!m_modalRegionActive) {
         return true;
     }
@@ -41,12 +72,13 @@ bool UIContext::Button(const std::string& label, float x, float y, float width, 
     bool isHovered = false;
     bool isClicked = false;
     const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
+    const UIClipRect clipRect = m_drawList ? m_drawList->GetActiveClipRect() : UIClipRect{};
 
     if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
-        if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
+        if (PointInWidgetClip(static_cast<float>(mx), static_cast<float>(my), x, y, width, height, clipRect)) {
             isHovered = true;
             if (m_inputManager->IsMouseButtonPressed(0)) isClicked = true;
         }
@@ -62,8 +94,8 @@ bool UIContext::Button(const std::string& label, float x, float y, float width, 
         
         if (m_fontManager && !label.empty()) {
             float textX = x + 15.0f;
-            float textY = y + (height / 2.0f) + 8.0f; 
-            m_drawList->AddText(*m_fontManager, label, textX, textY, 0xFFFFFFFF);
+            float textY = y + (height / 2.0f) + 8.0f;
+            m_drawList->AddText(*m_fontManager, label, textX, textY, 0xFFE0E0E0);
         }
     }
     return isClicked;
@@ -72,10 +104,11 @@ bool UIContext::Button(const std::string& label, float x, float y, float width, 
 bool UIContext::TextInput(const std::string& id, std::string& text, float x, float y, float width, float height, bool& isActive) {
     bool isHovered = false;
     const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
+    const UIClipRect clipRect = m_drawList ? m_drawList->GetActiveClipRect() : UIClipRect{};
     if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
-        if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
+        if (PointInWidgetClip(static_cast<float>(mx), static_cast<float>(my), x, y, width, height, clipRect)) {
             isHovered = true;
             if (m_inputManager->IsMouseButtonPressed(0)) isActive = true;
         } else if (m_inputManager->IsMouseButtonPressed(0)) {
@@ -112,12 +145,13 @@ bool UIContext::Checkbox(const std::string& label, bool& value, float x, float y
     bool isHovered = false;
     bool isClicked = false;
     const bool interactionAllowed = IsInteractionAllowed(x, y, size, size);
+    const UIClipRect clipRect = m_drawList ? m_drawList->GetActiveClipRect() : UIClipRect{};
 
     if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
-        if (mx >= x && mx <= x + size && my >= y && my <= y + size) {
+        if (PointInWidgetClip(static_cast<float>(mx), static_cast<float>(my), x, y, size, size, clipRect)) {
             isHovered = true;
             if (m_inputManager->IsMouseButtonPressed(0)) {
                 value = !value;
@@ -127,7 +161,7 @@ bool UIContext::Checkbox(const std::string& label, bool& value, float x, float y
     }
 
     uint32_t bgColor = isHovered ? 0xFF555555 : 0xFF333333;
-    uint32_t checkColor = 0xFFD77800; 
+    uint32_t checkColor = 0xFFE07020;
     
     if (m_drawList) {
         m_drawList->AddRectFilled(x, y, size, size, bgColor);
@@ -137,7 +171,7 @@ bool UIContext::Checkbox(const std::string& label, bool& value, float x, float y
         }
         
         if (m_fontManager && !label.empty()) {
-            m_drawList->AddText(*m_fontManager, label, x + size + 8.0f, y + size * 0.8f, 0xFFFFFFFF);
+            m_drawList->AddText(*m_fontManager, label, x + size + 8.0f, y + size * 0.8f, 0xFFD0D0D0);
         }
     }
     
@@ -152,12 +186,13 @@ bool UIContext::DragFloat(const std::string& label, float& value, float dragSpee
     float boxX = x + labelWidth;
     float boxWidth = width - labelWidth;
     const bool interactionAllowed = IsInteractionAllowed(boxX, y, boxWidth, height);
+    const UIClipRect clipRect = m_drawList ? m_drawList->GetActiveClipRect() : UIClipRect{};
 
     if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
-        if (mx >= boxX && mx <= boxX + boxWidth && my >= y && my <= y + height) {
+        if (PointInWidgetClip(static_cast<float>(mx), static_cast<float>(my), boxX, y, boxWidth, height, clipRect)) {
             isHovered = true;
             if (m_inputManager->IsMouseButtonPressed(0)) {
                 m_activeSliderId = label;
@@ -183,7 +218,7 @@ bool UIContext::DragFloat(const std::string& label, float& value, float dragSpee
 
     if (m_drawList) {
         if (m_fontManager) {
-            m_drawList->AddText(*m_fontManager, label, x, y + height * 0.7f, 0xFFBBBBBB);
+            m_drawList->AddText(*m_fontManager, label, x, y + height * 0.7f, 0xFF9A9A9A);
         }
 
         uint32_t bgColor = (m_activeSliderId == label) ? 0xFF444444 : (isHovered ? 0xFF333333 : 0xFF1A1A1A);
@@ -199,7 +234,7 @@ bool UIContext::DragFloat(const std::string& label, float& value, float dragSpee
         if (m_fontManager) {
             char valStr[32];
             snprintf(valStr, sizeof(valStr), "%.3f", value);
-            m_drawList->AddText(*m_fontManager, valStr, boxX + 15.0f, y + height * 0.7f, 0xFFFFFFFF);
+            m_drawList->AddText(*m_fontManager, valStr, boxX + 15.0f, y + height * 0.7f, 0xFFE0E0E0);
         }
     }
     
@@ -216,12 +251,13 @@ bool UIContext::ImageButton(uint32_t textureID, float x, float y, float width, f
     bool isHovered = false;
     bool isClicked = false;
     const bool interactionAllowed = IsInteractionAllowed(x, y, width, height);
+    const UIClipRect clipRect = m_drawList ? m_drawList->GetActiveClipRect() : UIClipRect{};
 
     if (m_inputManager && interactionAllowed) {
         int mx = m_inputManager->GetMouseX();
         int my = m_inputManager->GetMouseY();
 
-        if (mx >= x && mx <= x + width && my >= y && my <= y + height) {
+        if (PointInWidgetClip(static_cast<float>(mx), static_cast<float>(my), x, y, width, height, clipRect)) {
             isHovered = true;
             if (m_inputManager->IsMouseButtonPressed(0)) isClicked = true;
         }

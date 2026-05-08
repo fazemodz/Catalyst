@@ -1,913 +1,4 @@
-#include "BlueprintEditor.h"
-
-#include "Nodes/BlueprintNodeLibrary.h"
-#include "../Scene/GameObject.h"
-#include "../Launcher.h"
-#include "../UI/Input/InputManager.h"
-#include "../UI/Render/FontManager.h"
-#include "../UI/Render/UIDrawList.h"
-#include "../UI/UIContext.h"
-
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <cstdlib>
-#include <cstdio>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <map>
-#include <sstream>
-
-namespace fs = std::filesystem;
-
-namespace {
-std::wstring NormalizeAssetPath(const std::wstring& path) {
-    if (path.empty()) {
-        return L"";
-    }
-
-    std::error_code ec;
-    fs::path absolutePath = fs::absolute(fs::path(path), ec);
-    if (ec) {
-        absolutePath = fs::path(path);
-    }
-
-    return absolutePath.lexically_normal().wstring();
-}
-
-std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) {
-        return "";
-    }
-
-    const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (size <= 1) {
-        return "";
-    }
-
-    std::string converted(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, converted.data(), size, nullptr, nullptr);
-    converted.pop_back();
-    return converted;
-}
-
-std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) {
-        return L"";
-    }
-
-    const int size = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-    if (size <= 1) {
-        return L"";
-    }
-
-    std::wstring converted(static_cast<size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, converted.data(), size);
-    converted.pop_back();
-    return converted;
-}
-
-std::wstring DecodeStoredPath(const std::string& value) {
-    std::wstring converted = Utf8ToWide(value);
-    if (converted.empty() && !value.empty()) {
-        converted.assign(value.begin(), value.end());
-    }
-    return converted;
-}
-
-std::wstring ResolveBlueprintReferencePath(const std::wstring& blueprintAssetPath, const std::string& storedValue) {
-    const std::wstring decoded = DecodeStoredPath(storedValue);
-    if (decoded.empty()) {
-        return L"";
-    }
-
-    fs::path decodedPath(decoded);
-    if (decodedPath.is_relative() && !blueprintAssetPath.empty()) {
-        decodedPath = fs::path(blueprintAssetPath).parent_path() / decodedPath;
-    }
-
-    return NormalizeAssetPath(decodedPath.wstring());
-}
-
-std::wstring MakeBlueprintReferencePath(const std::wstring& blueprintAssetPath, const std::wstring& targetPath) {
-    const std::wstring normalizedTargetPath = NormalizeAssetPath(targetPath);
-    if (normalizedTargetPath.empty()) {
-        return L"";
-    }
-
-    if (blueprintAssetPath.empty()) {
-        return normalizedTargetPath;
-    }
-
-    std::error_code ec;
-    const fs::path blueprintFolder = fs::path(blueprintAssetPath).parent_path();
-    const fs::path relativePath = fs::relative(fs::path(normalizedTargetPath), blueprintFolder, ec);
-    if (!ec && !relativePath.empty()) {
-        return relativePath.lexically_normal().wstring();
-    }
-
-    return normalizedTargetPath;
-}
-
-float MeasureTextWidth(FontManager& fontManager, const std::string& text) {
-    float width = 0.0f;
-    for (char ch : text) {
-        if (ch == '\n') {
-            break;
-        }
-        width += fontManager.GetGlyph(ch).Advance;
-    }
-    return width;
-}
-
-std::string FitTextToWidth(FontManager& fontManager, const std::string& text, float maxWidth) {
-    if (maxWidth <= 0.0f) {
-        return "";
-    }
-
-    if (MeasureTextWidth(fontManager, text) <= maxWidth) {
-        return text;
-    }
-
-    const std::string ellipsis = "...";
-    const float ellipsisWidth = MeasureTextWidth(fontManager, ellipsis);
-    if (ellipsisWidth >= maxWidth) {
-        return "";
-    }
-
-    std::string fitted;
-    fitted.reserve(text.size());
-    float width = 0.0f;
-    for (char ch : text) {
-        const float glyphWidth = fontManager.GetGlyph(ch).Advance;
-        if ((width + glyphWidth + ellipsisWidth) > maxWidth) {
-            break;
-        }
-        fitted.push_back(ch);
-        width += glyphWidth;
-    }
-
-    fitted += ellipsis;
-    return fitted;
-}
-
-float MeasureWrappedTextHeight(FontManager& fontManager, const std::string& text, float wrapWidth) {
-    if (text.empty()) {
-        return 0.0f;
-    }
-
-    constexpr float kLineHeight = 28.0f;
-    if (wrapWidth <= 0.0f) {
-        return kLineHeight;
-    }
-
-    float cursorX = 0.0f;
-    int lineCount = 1;
-    for (char ch : text) {
-        if (ch == '\n') {
-            cursorX = 0.0f;
-            ++lineCount;
-            continue;
-        }
-
-        const float glyphWidth = fontManager.GetGlyph(ch).Advance;
-        if ((cursorX + glyphWidth) > wrapWidth) {
-            cursorX = 0.0f;
-            ++lineCount;
-            if (ch == ' ') {
-                continue;
-            }
-        }
-
-        cursorX += glyphWidth;
-    }
-
-    return static_cast<float>(lineCount) * kLineHeight;
-}
-
-bool IsPointInRect(float px, float py, float x, float y, float width, float height) {
-    return px >= x && px <= (x + width) && py >= y && py <= (y + height);
-}
-
-const char* ShortCategoryName(const char* category) {
-    if (category == nullptr) {
-        return "Field";
-    }
-    if (std::strcmp(category, "Physics.RigidBody") == 0) {
-        return "Rigid Body";
-    }
-    if (std::strcmp(category, "Physics.Collider") == 0) {
-        return "Collider";
-    }
-    return category;
-}
-
-uint32_t NodeAccentColor(BlueprintEditor::NodeVisualKind visualKind) {
-    switch (visualKind) {
-    case BlueprintEditor::NodeVisualKind::Event:
-        return 0xFF1F8E6E;
-    case BlueprintEditor::NodeVisualKind::Field:
-        return 0xFF3368A8;
-    case BlueprintEditor::NodeVisualKind::Component:
-        return 0xFF2E6F66;
-    case BlueprintEditor::NodeVisualKind::UIElement:
-        return 0xFF4F6375;
-    case BlueprintEditor::NodeVisualKind::Comment:
-        return 0xFF8D7A39;
-    case BlueprintEditor::NodeVisualKind::Function:
-    default:
-        return 0xFFB36A0B;
-    }
-}
-
-uint32_t FieldTypeColor(BlueprintFieldType type) {
-    switch (type) {
-    case BlueprintFieldType::Bool:
-        return 0xFF5FB36C;
-    case BlueprintFieldType::Float3:
-        return 0xFF5A86D6;
-    case BlueprintFieldType::Enum:
-        return 0xFFD6983A;
-    case BlueprintFieldType::Float:
-    default:
-        return 0xFF7B7B7B;
-    }
-}
-
-uint32_t ComponentAccentColor(BlueprintEditor::ComponentKind kind) {
-    switch (kind) {
-    case BlueprintEditor::ComponentKind::Camera:
-        return 0xFF5D8CD6;
-    case BlueprintEditor::ComponentKind::Trigger:
-        return 0xFFBF6A3A;
-    case BlueprintEditor::ComponentKind::SkeletalMesh:
-        return 0xFF5E9F7A;
-    case BlueprintEditor::ComponentKind::StaticMesh:
-    default:
-        return 0xFF4D7BA8;
-    }
-}
-
-uint32_t UIElementAccentColor(BlueprintEditor::UIElementKind kind) {
-    switch (kind) {
-    case BlueprintEditor::UIElementKind::Canvas:
-        return 0xFF3A6C7A;
-    case BlueprintEditor::UIElementKind::Button:
-        return 0xFF5A7BD0;
-    case BlueprintEditor::UIElementKind::Image:
-        return 0xFF8B6DAE;
-    case BlueprintEditor::UIElementKind::TextBlock:
-        return 0xFF3A8E5B;
-    case BlueprintEditor::UIElementKind::None:
-    default:
-        return 0xFF4F6375;
-    }
-}
-
-bool IsUIBlueprintPath(const std::wstring& assetPath) {
-    if (assetPath.empty()) {
-        return false;
-    }
-
-    std::wstring extension = fs::path(assetPath).extension().wstring();
-    std::transform(extension.begin(), extension.end(), extension.begin(), towlower);
-    return extension == L".catalystuiblueprint";
-}
-
-bool IsCreateWidgetNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kCreateWidgetNodeId;
-}
-
-bool IsAddToViewportNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kAddToViewportNodeId;
-}
-
-bool IsWidgetConstructNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kWidgetConstructNodeId;
-}
-
-bool IsSetTextColorNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kSetTextColorNodeId;
-}
-
-bool IsCanvasElementNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kCanvasElementNodeId;
-}
-
-bool IsButtonElementNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kButtonElementNodeId;
-}
-
-bool IsImageElementNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kImageElementNodeId;
-}
-
-bool IsTextBlockElementNodeType(const std::string& nodeTypeId) {
-    return nodeTypeId == BlueprintNodes::kTextBlockElementNodeId;
-}
-
-bool IsUIElementNodeType(const std::string& nodeTypeId) {
-    return IsCanvasElementNodeType(nodeTypeId) ||
-           IsButtonElementNodeType(nodeTypeId) ||
-           IsImageElementNodeType(nodeTypeId) ||
-           IsTextBlockElementNodeType(nodeTypeId);
-}
-
-BlueprintEditor::UIElementKind UIElementKindFromNodeType(const std::string& nodeTypeId) {
-    if (IsCanvasElementNodeType(nodeTypeId)) {
-        return BlueprintEditor::UIElementKind::Canvas;
-    }
-    if (IsButtonElementNodeType(nodeTypeId)) {
-        return BlueprintEditor::UIElementKind::Button;
-    }
-    if (IsImageElementNodeType(nodeTypeId)) {
-        return BlueprintEditor::UIElementKind::Image;
-    }
-    if (IsTextBlockElementNodeType(nodeTypeId)) {
-        return BlueprintEditor::UIElementKind::TextBlock;
-    }
-    return BlueprintEditor::UIElementKind::None;
-}
-
-const char* UIElementKindToString(BlueprintEditor::UIElementKind kind) {
-    switch (kind) {
-    case BlueprintEditor::UIElementKind::Canvas:
-        return "Canvas";
-    case BlueprintEditor::UIElementKind::Button:
-        return "Button";
-    case BlueprintEditor::UIElementKind::Image:
-        return "Image";
-    case BlueprintEditor::UIElementKind::TextBlock:
-        return "TextBlock";
-    case BlueprintEditor::UIElementKind::None:
-    default:
-        return "None";
-    }
-}
-
-BlueprintEditor::UIElementKind UIElementKindFromString(const std::string& value) {
-    if (value == "Canvas") {
-        return BlueprintEditor::UIElementKind::Canvas;
-    }
-    if (value == "Button") {
-        return BlueprintEditor::UIElementKind::Button;
-    }
-    if (value == "Image") {
-        return BlueprintEditor::UIElementKind::Image;
-    }
-    if (value == "TextBlock") {
-        return BlueprintEditor::UIElementKind::TextBlock;
-    }
-    return BlueprintEditor::UIElementKind::None;
-}
-
-DirectX::XMFLOAT4 UIntColorToFloat4(uint32_t color) {
-    const float a = static_cast<float>((color >> 24) & 0xFF) / 255.0f;
-    const float r = static_cast<float>((color >> 16) & 0xFF) / 255.0f;
-    const float g = static_cast<float>((color >> 8) & 0xFF) / 255.0f;
-    const float b = static_cast<float>(color & 0xFF) / 255.0f;
-    return {r, g, b, a};
-}
-
-uint32_t Float4ToUIntColor(const DirectX::XMFLOAT4& color) {
-    const auto ToByte = [](float value) {
-        const float clamped = (std::max)(0.0f, (std::min)(1.0f, value));
-        return static_cast<uint32_t>(std::lround(clamped * 255.0f));
-    };
-
-    const uint32_t a = ToByte(color.w);
-    const uint32_t r = ToByte(color.x);
-    const uint32_t g = ToByte(color.y);
-    const uint32_t b = ToByte(color.z);
-    return (a << 24) | (r << 16) | (g << 8) | b;
-}
-
-void DrawSectionHeader(UIDrawList& drawList, FontManager& fontManager, const std::string& title,
-                       float x, float y, float width) {
-    drawList.AddRectFilled(x, y, width, 26.0f, 0xFF31343A);
-    drawList.AddText(fontManager, title, x + 10.0f, y + 16.0f, 0xFFFFFFFF);
-}
-
-void DrawFieldBadge(UIDrawList& drawList, FontManager& fontManager, const std::string& label,
-                    float x, float y, uint32_t color) {
-    const float width = MeasureTextWidth(fontManager, label) + 18.0f;
-    drawList.AddRectFilled(x, y, width, 22.0f, color);
-    drawList.AddText(fontManager, label, x + 9.0f, y + 15.0f, 0xFFFFFFFF);
-}
-
-void DrawPinRow(UIDrawList& drawList, FontManager& fontManager, const std::string& label,
-                float x, float y, float width, bool isOutput, uint32_t pinColor, float scale = 1.0f) {
-    const float pinSize = (std::max)(4.0f, 6.0f * scale);
-    const float pinInset = 10.0f * scale;
-    const float pinX = isOutput ? (x + width - pinInset) : (x + 4.0f * scale);
-    drawList.AddRectFilled(pinX, y - pinSize - 1.0f, pinSize, pinSize, pinColor);
-    if (isOutput) {
-        const float textWidth = MeasureTextWidth(fontManager, label);
-        drawList.AddText(fontManager, label, x + width - textWidth - 18.0f * scale, y + 2.0f, 0xFFD4D4D4);
-    } else {
-        drawList.AddText(fontManager, label, x + 16.0f * scale, y + 2.0f, 0xFFD4D4D4);
-    }
-}
-
-std::string EscapeJsonString(const std::string& value) {
-    std::string escaped;
-    escaped.reserve(value.size());
-
-    for (char ch : value) {
-        switch (ch) {
-        case '\\': escaped += "\\\\"; break;
-        case '"': escaped += "\\\""; break;
-        case '\n': escaped += "\\n"; break;
-        case '\r': escaped += "\\r"; break;
-        case '\t': escaped += "\\t"; break;
-        default: escaped += ch; break;
-        }
-    }
-
-    return escaped;
-}
-
-enum class JsonValueType {
-    Null,
-    Number,
-    String,
-    Bool,
-    Array,
-    Object
-};
-
-struct JsonValue {
-    JsonValueType type = JsonValueType::Null;
-    double numberValue = 0.0;
-    bool boolValue = false;
-    std::string stringValue;
-    std::vector<JsonValue> arrayValue;
-    std::map<std::string, JsonValue> objectValue;
-};
-
-class JsonParser {
-public:
-    explicit JsonParser(const std::string& text)
-        : m_text(text) {
-    }
-
-    bool Parse(JsonValue& outValue) {
-        SkipWhitespace();
-        if (!ParseValue(outValue)) {
-            return false;
-        }
-
-        SkipWhitespace();
-        return m_pos == m_text.size();
-    }
-
-private:
-    bool ParseValue(JsonValue& outValue) {
-        SkipWhitespace();
-        if (m_pos >= m_text.size()) {
-            return false;
-        }
-
-        const char current = m_text[m_pos];
-        if (current == '{') {
-            return ParseObject(outValue);
-        }
-        if (current == '[') {
-            return ParseArray(outValue);
-        }
-        if (current == '"') {
-            outValue.type = JsonValueType::String;
-            return ParseString(outValue.stringValue);
-        }
-        if (current == '-' || (current >= '0' && current <= '9')) {
-            outValue.type = JsonValueType::Number;
-            return ParseNumber(outValue.numberValue);
-        }
-        if (ConsumeLiteral("true")) {
-            outValue.type = JsonValueType::Bool;
-            outValue.boolValue = true;
-            return true;
-        }
-        if (ConsumeLiteral("false")) {
-            outValue.type = JsonValueType::Bool;
-            outValue.boolValue = false;
-            return true;
-        }
-        if (ConsumeLiteral("null")) {
-            outValue.type = JsonValueType::Null;
-            return true;
-        }
-
-        return false;
-    }
-
-    bool ParseObject(JsonValue& outValue) {
-        if (!Match('{')) {
-            return false;
-        }
-
-        outValue.type = JsonValueType::Object;
-        outValue.objectValue.clear();
-        SkipWhitespace();
-        if (Match('}')) {
-            return true;
-        }
-
-        while (m_pos < m_text.size()) {
-            std::string key;
-            if (!ParseString(key)) {
-                return false;
-            }
-            SkipWhitespace();
-            if (!Match(':')) {
-                return false;
-            }
-
-            JsonValue child;
-            if (!ParseValue(child)) {
-                return false;
-            }
-            outValue.objectValue[key] = child;
-
-            SkipWhitespace();
-            if (Match('}')) {
-                return true;
-            }
-            if (!Match(',')) {
-                return false;
-            }
-            SkipWhitespace();
-        }
-
-        return false;
-    }
-
-    bool ParseArray(JsonValue& outValue) {
-        if (!Match('[')) {
-            return false;
-        }
-
-        outValue.type = JsonValueType::Array;
-        outValue.arrayValue.clear();
-        SkipWhitespace();
-        if (Match(']')) {
-            return true;
-        }
-
-        while (m_pos < m_text.size()) {
-            JsonValue child;
-            if (!ParseValue(child)) {
-                return false;
-            }
-            outValue.arrayValue.push_back(child);
-
-            SkipWhitespace();
-            if (Match(']')) {
-                return true;
-            }
-            if (!Match(',')) {
-                return false;
-            }
-            SkipWhitespace();
-        }
-
-        return false;
-    }
-
-    bool ParseString(std::string& outValue) {
-        if (!Match('"')) {
-            return false;
-        }
-
-        outValue.clear();
-        while (m_pos < m_text.size()) {
-            const char current = m_text[m_pos++];
-            if (current == '"') {
-                return true;
-            }
-            if (current != '\\') {
-                outValue += current;
-                continue;
-            }
-            if (m_pos >= m_text.size()) {
-                return false;
-            }
-
-            const char escaped = m_text[m_pos++];
-            switch (escaped) {
-            case '"':
-            case '\\':
-            case '/':
-                outValue += escaped;
-                break;
-            case 'b':
-                outValue += '\b';
-                break;
-            case 'f':
-                outValue += '\f';
-                break;
-            case 'n':
-                outValue += '\n';
-                break;
-            case 'r':
-                outValue += '\r';
-                break;
-            case 't':
-                outValue += '\t';
-                break;
-            default:
-                return false;
-            }
-        }
-
-        return false;
-    }
-
-    bool ParseNumber(double& outValue) {
-        const size_t start = m_pos;
-        if (m_text[m_pos] == '-') {
-            ++m_pos;
-        }
-        while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
-            ++m_pos;
-        }
-        if (m_pos < m_text.size() && m_text[m_pos] == '.') {
-            ++m_pos;
-            while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
-                ++m_pos;
-            }
-        }
-        if (m_pos < m_text.size() && (m_text[m_pos] == 'e' || m_text[m_pos] == 'E')) {
-            ++m_pos;
-            if (m_pos < m_text.size() && (m_text[m_pos] == '+' || m_text[m_pos] == '-')) {
-                ++m_pos;
-            }
-            while (m_pos < m_text.size() && std::isdigit(static_cast<unsigned char>(m_text[m_pos])) != 0) {
-                ++m_pos;
-            }
-        }
-
-        try {
-            outValue = std::stod(m_text.substr(start, m_pos - start));
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    void SkipWhitespace() {
-        while (m_pos < m_text.size() && std::isspace(static_cast<unsigned char>(m_text[m_pos])) != 0) {
-            ++m_pos;
-        }
-    }
-
-    bool Match(char expected) {
-        if (m_pos < m_text.size() && m_text[m_pos] == expected) {
-            ++m_pos;
-            return true;
-        }
-        return false;
-    }
-
-    bool ConsumeLiteral(const char* literal) {
-        const size_t literalLength = std::char_traits<char>::length(literal);
-        if (m_pos + literalLength > m_text.size()) {
-            return false;
-        }
-        if (m_text.compare(m_pos, literalLength, literal) != 0) {
-            return false;
-        }
-        m_pos += literalLength;
-        return true;
-    }
-
-    const std::string& m_text;
-    size_t m_pos = 0;
-};
-
-const JsonValue* FindJsonField(const JsonValue& objectValue, const char* key) {
-    if (objectValue.type != JsonValueType::Object) {
-        return nullptr;
-    }
-
-    auto found = objectValue.objectValue.find(key);
-    return found != objectValue.objectValue.end() ? &found->second : nullptr;
-}
-
-std::string GetJsonString(const JsonValue& objectValue, const char* key, const std::string& fallback = "") {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    return (field != nullptr && field->type == JsonValueType::String) ? field->stringValue : fallback;
-}
-
-float GetJsonNumber(const JsonValue& objectValue, const char* key, float fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    return (field != nullptr && field->type == JsonValueType::Number) ? static_cast<float>(field->numberValue) : fallback;
-}
-
-int GetJsonInt(const JsonValue& objectValue, const char* key, int fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    return (field != nullptr && field->type == JsonValueType::Number) ? static_cast<int>(field->numberValue) : fallback;
-}
-
-bool GetJsonBool(const JsonValue& objectValue, const char* key, bool fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    return (field != nullptr && field->type == JsonValueType::Bool) ? field->boolValue : fallback;
-}
-
-uint32_t GetJsonUInt(const JsonValue& objectValue, const char* key, uint32_t fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    return (field != nullptr && field->type == JsonValueType::Number) ? static_cast<uint32_t>(field->numberValue) : fallback;
-}
-
-DirectX::XMFLOAT3 GetJsonFloat3(const JsonValue& objectValue, const char* key, const DirectX::XMFLOAT3& fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    if (field == nullptr || field->type != JsonValueType::Array || field->arrayValue.size() != 3) {
-        return fallback;
-    }
-
-    for (const JsonValue& component : field->arrayValue) {
-        if (component.type != JsonValueType::Number) {
-            return fallback;
-        }
-    }
-
-    return {
-        static_cast<float>(field->arrayValue[0].numberValue),
-        static_cast<float>(field->arrayValue[1].numberValue),
-        static_cast<float>(field->arrayValue[2].numberValue)
-    };
-}
-
-DirectX::XMFLOAT4 GetJsonFloat4(const JsonValue& objectValue, const char* key, const DirectX::XMFLOAT4& fallback) {
-    const JsonValue* field = FindJsonField(objectValue, key);
-    if (field == nullptr || field->type != JsonValueType::Array || field->arrayValue.size() != 4) {
-        return fallback;
-    }
-
-    for (const JsonValue& component : field->arrayValue) {
-        if (component.type != JsonValueType::Number) {
-            return fallback;
-        }
-    }
-
-    return {
-        static_cast<float>(field->arrayValue[0].numberValue),
-        static_cast<float>(field->arrayValue[1].numberValue),
-        static_cast<float>(field->arrayValue[2].numberValue),
-        static_cast<float>(field->arrayValue[3].numberValue)
-    };
-}
-
-void WriteJsonFloat3(std::ostream& outStream, const DirectX::XMFLOAT3& value) {
-    outStream << "[" << value.x << ", " << value.y << ", " << value.z << "]";
-}
-
-void WriteJsonFloat4(std::ostream& outStream, const DirectX::XMFLOAT4& value) {
-    outStream << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
-}
-
-std::string ToLowerCopy(const std::string& value) {
-    std::string lowered = value;
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return lowered;
-}
-
-bool ContainsCaseInsensitive(const std::string& haystack, const std::string& needle) {
-    if (needle.empty()) {
-        return true;
-    }
-    return ToLowerCopy(haystack).find(ToLowerCopy(needle)) != std::string::npos;
-}
-
-bool DrawInlineTextInput(UIDrawList& drawList, FontManager& fontManager, InputManager& inputManager,
-                         const std::string& placeholder, std::string& text, bool& isActive,
-                         float x, float y, float width, float height, bool allowInteraction = true) {
-    const float mouseX = static_cast<float>(inputManager.GetMouseX());
-    const float mouseY = static_cast<float>(inputManager.GetMouseY());
-    const bool isHovered = allowInteraction && IsPointInRect(mouseX, mouseY, x, y, width, height);
-
-    if (allowInteraction && inputManager.IsMouseButtonPressed(0)) {
-        isActive = isHovered;
-    }
-
-    if (allowInteraction && isActive) {
-        for (char ch : inputManager.GetTypedCharacters()) {
-            if (ch == '\b') {
-                if (!text.empty()) {
-                    text.pop_back();
-                }
-            } else if (ch >= 32 && ch <= 126) {
-                text.push_back(ch);
-            }
-        }
-    }
-
-    drawList.AddRectFilled(x - 2.0f, y - 2.0f, width + 4.0f, height + 4.0f, isActive ? 0xFFD77800 : 0xFF3B3B3F);
-    drawList.AddRectFilled(x, y, width, height, isHovered ? 0xFF17181C : 0xFF111216);
-
-    std::string displayText = text;
-    if (isActive && ((GetTickCount() / 500) % 2 == 0)) {
-        displayText += "_";
-    }
-    if (displayText.empty() && !isActive) {
-        displayText = placeholder;
-    }
-
-    drawList.AddText(fontManager, displayText, x + 10.0f, y + 20.0f,
-                     (text.empty() && !isActive) ? 0xFF7C8087 : 0xFFFFFFFF,
-                     width - 20.0f);
-    return isActive;
-}
-
-struct CreateActionItem {
-    std::string id;
-    std::string label;
-    std::string subtitle;
-    BlueprintEditor::NodeVisualKind visual = BlueprintEditor::NodeVisualKind::Function;
-};
-
-const char* ComponentKindToString(BlueprintEditor::ComponentKind kind) {
-    switch (kind) {
-    case BlueprintEditor::ComponentKind::SkeletalMesh:
-        return "SkeletalMesh";
-    case BlueprintEditor::ComponentKind::Camera:
-        return "Camera";
-    case BlueprintEditor::ComponentKind::Trigger:
-        return "Trigger";
-    case BlueprintEditor::ComponentKind::StaticMesh:
-    default:
-        return "StaticMesh";
-    }
-}
-
-BlueprintEditor::ComponentKind ComponentKindFromString(const std::string& value) {
-    if (value == "SkeletalMesh") {
-        return BlueprintEditor::ComponentKind::SkeletalMesh;
-    }
-    if (value == "Camera") {
-        return BlueprintEditor::ComponentKind::Camera;
-    }
-    if (value == "Trigger") {
-        return BlueprintEditor::ComponentKind::Trigger;
-    }
-    return BlueprintEditor::ComponentKind::StaticMesh;
-}
-
-std::string NodeVisualToString(BlueprintEditor::NodeVisualKind visual) {
-    switch (visual) {
-    case BlueprintEditor::NodeVisualKind::Event: return "Event";
-    case BlueprintEditor::NodeVisualKind::Field: return "Field";
-    case BlueprintEditor::NodeVisualKind::Component: return "Component";
-    case BlueprintEditor::NodeVisualKind::UIElement: return "UIElement";
-    case BlueprintEditor::NodeVisualKind::Comment: return "Comment";
-    case BlueprintEditor::NodeVisualKind::Function:
-    default: return "Function";
-    }
-}
-
-BlueprintEditor::NodeVisualKind NodeVisualFromString(const std::string& value) {
-    if (value == "Event") {
-        return BlueprintEditor::NodeVisualKind::Event;
-    }
-    if (value == "Field") {
-        return BlueprintEditor::NodeVisualKind::Field;
-    }
-    if (value == "Component") {
-        return BlueprintEditor::NodeVisualKind::Component;
-    }
-    if (value == "UIElement") {
-        return BlueprintEditor::NodeVisualKind::UIElement;
-    }
-    if (value == "Comment") {
-        return BlueprintEditor::NodeVisualKind::Comment;
-    }
-    return BlueprintEditor::NodeVisualKind::Function;
-}
-
-const char* PinKindToString(BlueprintEditor::PinKind kind) {
-    switch (kind) {
-    case BlueprintEditor::PinKind::Data:
-        return "Data";
-    case BlueprintEditor::PinKind::Exec:
-    default:
-        return "Exec";
-    }
-}
-
-BlueprintEditor::PinKind PinKindFromString(const std::string& value) {
-    if (value == "Data") {
-        return BlueprintEditor::PinKind::Data;
-    }
-    return BlueprintEditor::PinKind::Exec;
-}
-
-float ScreenToGraph(float screenValue, float canvasValue, float panValue, float zoom) {
-    return (screenValue - canvasValue - panValue) / zoom;
-}
-}
+#include "BlueprintEditor_Internal.h"
 
 void BlueprintEditor::Open(const GameObject* targetObject) {
     m_isOpen = true;
@@ -1447,7 +538,7 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
         }
         paletteY += 32.0f;
         drawList.AddText(fontManager,
-                         "Buttons fire OnClicked exec links. Connect a TextBlock into Set Text Color's Target pin.",
+                         "Buttons fire OnPressed exec links. Connect a TextBlock into Set Text Color's Target pin.",
                          paletteX + 6.0f, paletteY + 14.0f, 0xFF8E99A5, paletteInnerW - 12.0f);
         paletteY += 32.0f;
     } else if (!isViewportTab && !isUIAsset) {
@@ -1817,7 +908,7 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                     drawList.AddText(fontManager, editableNode->title, inspectorRowX + 10.0f, inspectorY + 22.0f, 0xFFFFFFFF);
                     drawList.AddText(fontManager,
                                      BuildUIElementTypeLabel(editableNode->uiElementKind) + "  |  Output pins: " +
-                                         (editableNode->uiElementKind == UIElementKind::Button ? "OnClicked + Self" : "Self"),
+                                         (editableNode->uiElementKind == UIElementKind::Button ? "OnPressed + Self" : "Self"),
                                      inspectorRowX + 10.0f, inspectorY + 48.0f, 0xFFB5BEC8, inspectorRowW - 20.0f);
                     inspectorY += 84.0f;
 
@@ -1829,6 +920,16 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                                         inspectorRowX + 10.0f, inspectorY + 12.0f, inspectorRowW - 20.0f, 30.0f,
                                         !interactionsBlocked);
                     inspectorY += 70.0f;
+
+                    DrawSectionHeader(drawList, fontManager, "RUNTIME", inspectorRowX, inspectorY, inspectorRowW);
+                    inspectorY += 32.0f;
+                    drawList.AddRectFilled(inspectorRowX, inspectorY, inspectorRowW, 52.0f, 0xFF101010);
+                    uiCtx.Checkbox("Visible In Game", editableNode->visibleInGame, inspectorRowX + 10.0f, inspectorY + 10.0f, 16.0f);
+                    if (!editableNode->visibleInGame) {
+                        drawList.AddText(fontManager, "Hidden elements stay editable here but do not render in play mode.",
+                                         inspectorRowX + 34.0f, inspectorY + 34.0f, 0xFFE0C36F, inspectorRowW - 44.0f);
+                    }
+                    inspectorY += 64.0f;
 
                     DrawSectionHeader(drawList, fontManager, "LAYOUT", inspectorRowX, inspectorY, inspectorRowW);
                     inspectorY += 32.0f;
@@ -1872,12 +973,16 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
             } else if (selectedNode->visual == NodeVisualKind::Function &&
                        (IsCreateWidgetNodeType(selectedNode->nodeTypeId) ||
                         IsAddToViewportNodeType(selectedNode->nodeTypeId) ||
+                        IsSwapWidgetNodeType(selectedNode->nodeTypeId) ||
+                        IsOpenLevelNodeType(selectedNode->nodeTypeId) ||
                         IsSetTextColorNodeType(selectedNode->nodeTypeId))) {
-                DrawSectionHeader(drawList, fontManager, "WIDGET", inspectorRowX, inspectorY, inspectorRowW);
+                DrawSectionHeader(drawList, fontManager, "ASSET", inspectorRowX, inspectorY, inspectorRowW);
                 inspectorY += 32.0f;
                 drawList.AddRectFilled(inspectorRowX, inspectorY, inspectorRowW, 72.0f, 0xFF101010);
                 const std::string assetLabel = IsSetTextColorNodeType(selectedNode->nodeTypeId)
                     ? "Connect a TextBlock node into the Target data pin."
+                    : IsOpenLevelNodeType(selectedNode->nodeTypeId)
+                    ? (selectedNode->assetPath.empty() ? "No map assigned yet." : fs::path(selectedNode->assetPath).filename().string())
                     : selectedNode->assetPath.empty()
                     ? "No UI Blueprint asset assigned yet."
                     : fs::path(selectedNode->assetPath).filename().string();
@@ -1886,6 +991,10 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                 drawList.AddText(fontManager,
                                  IsSetTextColorNodeType(selectedNode->nodeTypeId)
                                      ? "When exec fires, this node updates the target TextBlock tint below."
+                                     : IsOpenLevelNodeType(selectedNode->nodeTypeId)
+                                     ? "Assign a .catalystmap. When exec fires, play mode loads that level."
+                                     : IsSwapWidgetNodeType(selectedNode->nodeTypeId)
+                                     ? "Assign a UI Blueprint to replace the currently running widget."
                                      : IsCreateWidgetNodeType(selectedNode->nodeTypeId)
                                      ? "Browse for a UI Blueprint, or drag one from Widget Assets onto this node's Widget pin."
                                      : "Connect the output of Create Widget into this node's Widget input.",
@@ -1910,7 +1019,7 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                         editableNode->tint.w = (std::max)(0.0f, (std::min)(1.0f, editableNode->tint.w));
                         inspectorY += 36.0f;
                     }
-                } else if (IsCreateWidgetNodeType(selectedNode->nodeTypeId)) {
+                } else if (IsCreateWidgetNodeType(selectedNode->nodeTypeId) || IsSwapWidgetNodeType(selectedNode->nodeTypeId)) {
                     if (uiCtx.Button("Browse UI Blueprint", inspectorRowX, inspectorY, 154.0f, 24.0f,
                                      0xFF2A2A2A, 0xFF3B3B3B, 0xFF1E1E1E)) {
                         const std::wstring selectedAssetPath = BrowseForUIBlueprintFile(windowHandle != nullptr ? windowHandle : GetActiveWindow());
@@ -1927,6 +1036,28 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                         if (mutableNode != nullptr) {
                             mutableNode->assetPath.clear();
                             SetStatus("Cleared the widget asset on " + mutableNode->title + ".", 0xFFB7BEC8, 2200);
+                        }
+                    }
+                    inspectorY += 36.0f;
+                } else if (IsOpenLevelNodeType(selectedNode->nodeTypeId)) {
+                    if (uiCtx.Button("Browse Map", inspectorRowX, inspectorY, 128.0f, 24.0f,
+                                     0xFF2A2A2A, 0xFF3B3B3B, 0xFF1E1E1E)) {
+                        const std::wstring selectedMapPath = BrowseForMapFile(windowHandle != nullptr ? windowHandle : GetActiveWindow());
+                        if (!selectedMapPath.empty()) {
+                            Node* mutableNode = FindNode(selectedNode->id);
+                            if (mutableNode != nullptr) {
+                                mutableNode->assetPath = NormalizeAssetPath(selectedMapPath);
+                                SetStatus("Assigned " + fs::path(mutableNode->assetPath).filename().string() + " to " + mutableNode->title + ".",
+                                          0xFF89D185, 2600);
+                            }
+                        }
+                    }
+                    if (uiCtx.Button("Clear Map", inspectorRowX + 136.0f, inspectorY, 92.0f, 24.0f,
+                                     0xFF2A2A2A, 0xFF3B3B3B, 0xFF1E1E1E)) {
+                        Node* mutableNode = FindNode(selectedNode->id);
+                        if (mutableNode != nullptr) {
+                            mutableNode->assetPath.clear();
+                            SetStatus("Cleared the map on " + mutableNode->title + ".", 0xFFB7BEC8, 2200);
                         }
                     }
                     inspectorY += 36.0f;
@@ -2082,21 +1213,35 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                 GetDesignerElementRect(node, elementX, elementY, elementW, elementH);
                 const uint32_t tintColor = Float4ToUIntColor(node.tint);
                 const bool isSelected = node.id == m_selectedNodeId;
+                const bool hiddenInGame = !node.visibleInGame;
+                DirectX::XMFLOAT4 previewTint = node.tint;
+                if (hiddenInGame) {
+                    previewTint.x *= 0.55f;
+                    previewTint.y *= 0.55f;
+                    previewTint.z *= 0.55f;
+                    previewTint.w = (std::max)(0.45f, previewTint.w);
+                }
+                const uint32_t previewTintColor = hiddenInGame ? Float4ToUIntColor(previewTint) : tintColor;
 
                 if (node.uiElementKind == UIElementKind::Canvas) {
-                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
+                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, previewTintColor);
                     drawList.AddText(fontManager, FitTextToWidth(fontManager, node.displayText, elementW - 20.0f),
                                      elementX + 10.0f, elementY + 20.0f, 0xFFFFFFFF, elementW - 20.0f);
                 } else if (node.uiElementKind == UIElementKind::Button) {
-                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
+                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, previewTintColor);
                     drawList.AddRectFilled(elementX, elementY, elementW, 3.0f, 0xFFFFFFFF);
                     drawList.AddText(fontManager, FitTextToWidth(fontManager, node.displayText, elementW - 20.0f),
                                      elementX + 10.0f, elementY + elementH * 0.5f, 0xFFFFFFFF, elementW - 20.0f);
                 } else if (node.uiElementKind == UIElementKind::TextBlock) {
-                    drawList.AddText(fontManager, node.displayText, elementX + 4.0f, elementY + 20.0f, tintColor, elementW - 8.0f);
+                    drawList.AddText(fontManager, node.displayText, elementX + 4.0f, elementY + 20.0f, previewTintColor, elementW - 8.0f);
                 } else if (node.uiElementKind == UIElementKind::Image) {
-                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
+                    drawList.AddRectFilled(elementX, elementY, elementW, elementH, previewTintColor);
                     drawList.AddText(fontManager, "Image", elementX + 10.0f, elementY + 22.0f, 0xFFFFFFFF, elementW - 20.0f);
+                }
+
+                if (hiddenInGame) {
+                    drawList.AddRectFilled(elementX, elementY, elementW, 18.0f, 0xCC40211A);
+                    drawList.AddText(fontManager, "Hidden In Game", elementX + 8.0f, elementY + 13.0f, 0xFFF1D0C4, elementW - 16.0f);
                 }
 
                 if (isSelected) {
@@ -2149,7 +1294,7 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
         if (isUIAsset) {
             drawList.AddText(fontManager, "Widget Tree", canvasX + 56.0f, canvasY + 116.0f, 0xFFFFFFFF);
             drawList.AddText(fontManager,
-                             "UI elements are listed in authoring order. Button nodes expose OnClicked in the Graph tab.",
+                             "UI elements are listed in authoring order. Button nodes expose OnPressed in the Graph tab.",
                              canvasX + 56.0f, canvasY + 146.0f, 0xFF9DA6B1, canvasW - 112.0f);
             float treeY = canvasY + 226.0f;
             for (const Node& node : m_nodes) {
@@ -2161,6 +1306,9 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                 drawList.AddRectFilled(canvasX + 56.0f, treeY, 4.0f, 38.0f, UIElementAccentColor(node.uiElementKind));
                 drawList.AddText(fontManager, node.title, canvasX + 68.0f, treeY + 18.0f, 0xFFFFFFFF, canvasW - 144.0f);
                 drawList.AddText(fontManager, BuildUIElementTypeLabel(node.uiElementKind), canvasX + 220.0f, treeY + 18.0f, 0xFFBEC6D0, canvasW - 280.0f);
+                if (!node.visibleInGame) {
+                    drawList.AddText(fontManager, "Hidden", canvasX + canvasW - 168.0f, treeY + 18.0f, 0xFFE0C36F, 88.0f);
+                }
                 if (!interactionsBlocked &&
                     inputManager.IsMouseButtonPressed(0) &&
                     IsPointInRect(static_cast<float>(inputManager.GetMouseX()), static_cast<float>(inputManager.GetMouseY()),
@@ -2242,7 +1390,10 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
         }
 
         if (node.visual == NodeVisualKind::Function) {
-            const std::string inputLabel = IsCreateWidgetNodeType(node.nodeTypeId) || IsAddToViewportNodeType(node.nodeTypeId)
+            const std::string inputLabel = IsOpenLevelNodeType(node.nodeTypeId)
+                ? "Level"
+                : IsCreateWidgetNodeType(node.nodeTypeId) || IsAddToViewportNodeType(node.nodeTypeId)
+                || IsSwapWidgetNodeType(node.nodeTypeId)
                 ? "Widget"
                 : IsSetTextColorNodeType(node.nodeTypeId)
                 ? "Target"
@@ -2251,6 +1402,10 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                 ? "Created"
                 : IsAddToViewportNodeType(node.nodeTypeId)
                 ? "Viewport"
+                : IsSwapWidgetNodeType(node.nodeTypeId)
+                ? "Swapped"
+                : IsOpenLevelNodeType(node.nodeTypeId)
+                ? "Opened"
                 : IsSetTextColorNodeType(node.nodeTypeId)
                 ? "Updated"
                 : "Updated";
@@ -2268,6 +1423,14 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
                        : ("Creates " + fs::path(node.assetPath).stem().string() + " so it can be added to the viewport."))
                 : IsAddToViewportNodeType(node.nodeTypeId)
                 ? "Adds the created widget instance to the play viewport overlay."
+                : IsSwapWidgetNodeType(node.nodeTypeId)
+                ? (node.assetPath.empty()
+                       ? "Swap the current widget to another UI Blueprint."
+                       : ("Replaces this widget with " + fs::path(node.assetPath).stem().string() + "."))
+                : IsOpenLevelNodeType(node.nodeTypeId)
+                ? (node.assetPath.empty()
+                       ? "Load another map during play."
+                       : ("Loads " + fs::path(node.assetPath).stem().string() + " during play."))
                 : IsSetTextColorNodeType(node.nodeTypeId)
                 ? "Changes a TextBlock node's runtime tint when its exec pin is triggered."
                 : node.title == "Refresh Preview Data"
@@ -2282,7 +1445,7 @@ void BlueprintEditor::Draw(UIDrawList& drawList, UIContext& uiCtx, FontManager& 
         if (node.visual == NodeVisualKind::UIElement) {
             const uint32_t elementColor = UIElementAccentColor(node.uiElementKind);
             if (node.uiElementKind == UIElementKind::Button) {
-                DrawPinRow(drawList, fontManager, "OnClicked", nodeX + 8.0f * m_zoom, nodeY + headerH + 44.0f,
+                DrawPinRow(drawList, fontManager, "OnPressed", nodeX + 8.0f * m_zoom, nodeY + headerH + 44.0f,
                            nodeW - 16.0f * m_zoom, true, 0xFFEFEFEF, m_zoom);
             }
             DrawPinRow(drawList, fontManager, "Self", nodeX + 8.0f * m_zoom, nodeY + headerH + 70.0f,
@@ -2651,407 +1814,6 @@ void BlueprintEditor::RebuildGraph(const GameObject* selectedObject) {
     m_graphDirty = false;
 }
 
-bool BlueprintEditor::LoadAsset() {
-    if (!HasOpenAsset()) {
-        return false;
-    }
-
-    std::ifstream file(fs::path(m_assetPath), std::ios::binary);
-    if (!file.is_open()) {
-        return false;
-    }
-
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    JsonValue rootValue;
-    JsonParser parser(content);
-    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
-        return false;
-    }
-
-    const std::string assetType = GetJsonString(rootValue, "type", "CatalystBlueprint");
-    m_assetKind = assetType == "CatalystUIBlueprint" ? AssetKind::UI : AssetKind::Actor;
-    const bool isUIAsset = IsUIAsset();
-    const JsonValue* graphRoot = &rootValue;
-    if (isUIAsset) {
-        const JsonValue* graphValue = FindJsonField(rootValue, "graph");
-        if (graphValue != nullptr && graphValue->type == JsonValueType::Object) {
-            graphRoot = graphValue;
-        }
-    }
-
-    if ((!isUIAsset && GetJsonBool(rootValue, "seedDefaultGraph", false)) ||
-        (isUIAsset && GetJsonBool(*graphRoot, "seedDefaultGraph", false))) {
-        RebuildGraph(nullptr);
-        m_graphDirty = false;
-        m_savedAssetDocument = BuildAssetDocument();
-        m_hasSavedAssetDocument = true;
-        return true;
-    }
-
-    m_targetLabel = fs::path(m_assetPath).stem().string();
-    m_components.clear();
-    m_nodes.clear();
-    m_links.clear();
-    m_nextNodeId = 1;
-    m_nextComponentId = 1;
-    m_selectedNodeId = -1;
-    m_selectedComponentId = -1;
-    m_draggingNodeId = -1;
-    m_draggingDesignerNodeId = -1;
-    m_isResizingDesignerNode = false;
-    ClearLinkDrag();
-    m_isPanning = false;
-    m_showCreateMenu = false;
-    m_createSearchActive = false;
-    m_assetBrowserDirty = true;
-    m_draggingAssetBrowserIndex = -1;
-
-    const JsonValue* viewValue = FindJsonField(*graphRoot, "view");
-    if (viewValue != nullptr && viewValue->type == JsonValueType::Object) {
-        m_pan.x = GetJsonNumber(*viewValue, "panX", 24.0f);
-        m_pan.y = GetJsonNumber(*viewValue, "panY", 42.0f);
-        m_zoom = GetJsonNumber(*viewValue, "zoom", 1.0f);
-    } else {
-        m_pan = {24.0f, 42.0f};
-        m_zoom = 1.0f;
-    }
-    m_zoom = (std::max)(0.75f, (std::min)(m_zoom, 1.45f));
-
-    int highestComponentId = 0;
-    const JsonValue* componentsValue = isUIAsset ? nullptr : FindJsonField(rootValue, "components");
-    if (!isUIAsset && componentsValue != nullptr && componentsValue->type == JsonValueType::Array) {
-        for (const JsonValue& componentValue : componentsValue->arrayValue) {
-            if (componentValue.type != JsonValueType::Object) {
-                continue;
-            }
-
-            BlueprintComponent component;
-            component.id = GetJsonInt(componentValue, "id", highestComponentId + 1);
-            component.name = GetJsonString(componentValue, "name", "Component");
-            component.kind = ComponentKindFromString(GetJsonString(componentValue, "kind", "StaticMesh"));
-            component.assetPath = ResolveBlueprintReferencePath(m_assetPath, GetJsonString(componentValue, "assetPath"));
-            component.location = GetJsonFloat3(componentValue, "location", {0.0f, 0.0f, 0.0f});
-            component.rotation = GetJsonFloat3(componentValue, "rotation", {0.0f, 0.0f, 0.0f});
-            component.scale = GetJsonFloat3(componentValue, "scale", {1.0f, 1.0f, 1.0f});
-            component.possessOnPlay = GetJsonBool(componentValue, "possessOnPlay", false);
-            component.triggerShape =
-                PhysicsColliderShapeFromString(GetJsonString(componentValue, "triggerShape", "Box"));
-            component.triggerExtents = GetJsonFloat3(componentValue, "triggerExtents", {0.75f, 0.75f, 0.75f});
-            component.triggerRadius = GetJsonNumber(componentValue, "triggerRadius", 0.75f);
-            component.exposeToGraph = GetJsonBool(componentValue, "exposeToGraph", true);
-            m_components.push_back(component);
-            highestComponentId = (std::max)(highestComponentId, component.id);
-        }
-    }
-
-    int highestNodeId = 0;
-    const JsonValue* nodesValue = FindJsonField(*graphRoot, "nodes");
-    if (nodesValue != nullptr && nodesValue->type == JsonValueType::Array) {
-        for (const JsonValue& nodeValue : nodesValue->arrayValue) {
-            if (nodeValue.type != JsonValueType::Object) {
-                continue;
-            }
-
-            Node node;
-            node.id = GetJsonInt(nodeValue, "id", highestNodeId + 1);
-            node.title = GetJsonString(nodeValue, "title", "Node");
-            node.subtitle = GetJsonString(nodeValue, "subtitle", "");
-            node.x = GetJsonNumber(nodeValue, "x", 0.0f);
-            node.y = GetJsonNumber(nodeValue, "y", 0.0f);
-            node.width = GetJsonNumber(nodeValue, "width", 210.0f);
-            node.height = GetJsonNumber(nodeValue, "height", 92.0f);
-            node.visual = NodeVisualFromString(GetJsonString(nodeValue, "visual", "Function"));
-            node.nodeTypeId = GetJsonString(nodeValue, "nodeTypeId");
-            node.fieldCategory = GetJsonString(nodeValue, "fieldCategory");
-            node.fieldName = GetJsonString(nodeValue, "fieldName");
-            node.componentId = GetJsonInt(nodeValue, "componentId", -1);
-            node.componentName = GetJsonString(nodeValue, "componentName");
-            node.componentKind = ComponentKindFromString(GetJsonString(nodeValue, "componentKind", "StaticMesh"));
-            node.uiElementKind = UIElementKindFromString(GetJsonString(nodeValue, "uiElementKind"));
-            if (node.uiElementKind == UIElementKind::None) {
-                node.uiElementKind = UIElementKindFromNodeType(node.nodeTypeId);
-            }
-            node.canvasX = GetJsonNumber(nodeValue, "canvasX", 32.0f);
-            node.canvasY = GetJsonNumber(nodeValue, "canvasY", 32.0f);
-            node.canvasWidth = GetJsonNumber(nodeValue, "canvasWidth", 180.0f);
-            node.canvasHeight = GetJsonNumber(nodeValue, "canvasHeight", 56.0f);
-            node.displayText = GetJsonString(nodeValue, "displayText");
-            node.tint = GetJsonFloat4(nodeValue, "tint", UIntColorToFloat4(UIElementAccentColor(node.uiElementKind)));
-            node.assetPath = ResolveBlueprintReferencePath(m_assetPath, GetJsonString(nodeValue, "assetPath"));
-            node.canDelete = GetJsonBool(nodeValue, "canDelete", true);
-            node.field = ResolveFieldDescriptor(node.fieldCategory, node.fieldName);
-            if (const BlueprintComponent* component = FindComponent(node.componentId)) {
-                node.componentName = component->name;
-                node.componentKind = component->kind;
-            }
-            if (node.displayText.empty()) {
-                if (node.uiElementKind == UIElementKind::Button) {
-                    node.displayText = "Button";
-                } else if (node.uiElementKind == UIElementKind::TextBlock) {
-                    node.displayText = "Text";
-                } else if (node.uiElementKind == UIElementKind::Canvas) {
-                    node.displayText = "Canvas";
-                } else if (node.uiElementKind == UIElementKind::Image) {
-                    node.displayText = "Image";
-                }
-            }
-            if (node.uiElementKind != UIElementKind::None) {
-                node.visual = NodeVisualKind::UIElement;
-            }
-
-            m_nodes.push_back(node);
-            highestNodeId = (std::max)(highestNodeId, node.id);
-        }
-    }
-
-    const JsonValue* linksValue = FindJsonField(*graphRoot, "links");
-    if (linksValue != nullptr && linksValue->type == JsonValueType::Array) {
-        for (const JsonValue& linkValue : linksValue->arrayValue) {
-            if (linkValue.type != JsonValueType::Object) {
-                continue;
-            }
-
-            PinReference outputPin;
-            outputPin.nodeId = GetJsonInt(linkValue, "fromNodeId", 0);
-            outputPin.kind = PinKindFromString(GetJsonString(linkValue, "fromPinKind", "Exec"));
-            outputPin.direction = PinDirection::Output;
-
-            PinReference inputPin;
-            inputPin.nodeId = GetJsonInt(linkValue, "toNodeId", 0);
-            inputPin.kind = PinKindFromString(GetJsonString(linkValue, "toPinKind", "Exec"));
-            inputPin.direction = PinDirection::Input;
-
-            AddLink(outputPin, inputPin, GetJsonUInt(linkValue, "color", 0xFF4B4B4B));
-        }
-    }
-
-    if (m_nodes.empty() && m_links.empty()) {
-        RebuildGraph(nullptr);
-        m_graphDirty = false;
-        m_savedAssetDocument = BuildAssetDocument();
-        m_hasSavedAssetDocument = true;
-        return true;
-    }
-
-    m_nextNodeId = highestNodeId + 1;
-    m_nextComponentId = highestComponentId + 1;
-    const int savedSelection = GetJsonInt(*graphRoot, "selectedNodeId", -1);
-    m_selectedNodeId = (FindNode(savedSelection) != nullptr) ? savedSelection : (m_nodes.empty() ? -1 : m_nodes.front().id);
-    const int savedComponentSelection = isUIAsset ? -1 : GetJsonInt(rootValue, "selectedComponentId", -1);
-    m_selectedComponentId = (FindComponent(savedComponentSelection) != nullptr)
-        ? savedComponentSelection
-        : (m_components.empty() ? -1 : m_components.front().id);
-    m_graphDirty = false;
-    m_savedAssetDocument = BuildAssetDocument();
-    m_hasSavedAssetDocument = true;
-    return true;
-}
-
-std::string BlueprintEditor::BuildAssetDocument() const {
-    if (!HasOpenAsset()) {
-        return "";
-    }
-
-    std::ostringstream file;
-    auto WriteNodes = [&]() {
-        file << "      \"nodes\": [\n";
-        for (size_t nodeIndex = 0; nodeIndex < m_nodes.size(); ++nodeIndex) {
-            const Node& node = m_nodes[nodeIndex];
-            const std::string fieldCategory = !node.fieldCategory.empty()
-                ? node.fieldCategory
-                : (node.field != nullptr ? node.field->category : std::string());
-            const std::string fieldName = !node.fieldName.empty()
-                ? node.fieldName
-                : (node.field != nullptr ? node.field->name : std::string());
-            const std::wstring storedNodeAssetPath = MakeBlueprintReferencePath(m_assetPath, node.assetPath);
-            file << "        {\n";
-            file << "          \"id\": " << node.id << ",\n";
-            file << "          \"title\": \"" << EscapeJsonString(node.title) << "\",\n";
-            file << "          \"subtitle\": \"" << EscapeJsonString(node.subtitle) << "\",\n";
-            file << "          \"x\": " << node.x << ",\n";
-            file << "          \"y\": " << node.y << ",\n";
-            file << "          \"width\": " << node.width << ",\n";
-            file << "          \"height\": " << node.height << ",\n";
-            file << "          \"visual\": \"" << NodeVisualToString(node.visual) << "\",\n";
-            file << "          \"nodeTypeId\": \"" << EscapeJsonString(node.nodeTypeId) << "\",\n";
-            file << "          \"fieldCategory\": \"" << EscapeJsonString(fieldCategory) << "\",\n";
-            file << "          \"fieldName\": \"" << EscapeJsonString(fieldName) << "\",\n";
-            file << "          \"componentId\": " << node.componentId << ",\n";
-            file << "          \"componentName\": \"" << EscapeJsonString(node.componentName) << "\",\n";
-            file << "          \"componentKind\": \"" << ComponentKindToString(node.componentKind) << "\",\n";
-            file << "          \"uiElementKind\": \"" << UIElementKindToString(node.uiElementKind) << "\",\n";
-            file << "          \"canvasX\": " << node.canvasX << ",\n";
-            file << "          \"canvasY\": " << node.canvasY << ",\n";
-            file << "          \"canvasWidth\": " << node.canvasWidth << ",\n";
-            file << "          \"canvasHeight\": " << node.canvasHeight << ",\n";
-            file << "          \"displayText\": \"" << EscapeJsonString(node.displayText) << "\",\n";
-            file << "          \"tint\": ";
-            WriteJsonFloat4(file, node.tint);
-            file << ",\n";
-            file << "          \"assetPath\": \"" << EscapeJsonString(WideToUtf8(storedNodeAssetPath)) << "\",\n";
-            file << "          \"canDelete\": " << (node.canDelete ? "true" : "false") << "\n";
-            file << "        }" << (nodeIndex + 1 < m_nodes.size() ? "," : "") << "\n";
-        }
-        file << "      ],\n";
-        file << "      \"links\": [\n";
-        for (size_t linkIndex = 0; linkIndex < m_links.size(); ++linkIndex) {
-            const Link& link = m_links[linkIndex];
-            file << "        {\n";
-            file << "          \"fromNodeId\": " << link.fromNodeId << ",\n";
-            file << "          \"toNodeId\": " << link.toNodeId << ",\n";
-            file << "          \"fromPinKind\": \"" << PinKindToString(link.fromPinKind) << "\",\n";
-            file << "          \"toPinKind\": \"" << PinKindToString(link.toPinKind) << "\",\n";
-            file << "          \"color\": " << link.color << "\n";
-            file << "        }" << (linkIndex + 1 < m_links.size() ? "," : "") << "\n";
-        }
-        file << "      ]\n";
-    };
-
-    if (IsUIAsset()) {
-        file << "{\n";
-        file << "  \"type\": \"CatalystUIBlueprint\",\n";
-        file << "  \"version\": 2,\n";
-        file << "  \"parent\": \"UserWidget\",\n";
-        file << "  \"designer\": {\n";
-        file << "    \"root\": {\n";
-        file << "      \"type\": \"CanvasPanel\",\n";
-        file << "      \"name\": \"RootCanvas\",\n";
-        file << "      \"children\": []\n";
-        file << "    }\n";
-        file << "  },\n";
-        file << "  \"graph\": {\n";
-        file << "      \"seedDefaultGraph\": false,\n";
-        file << "      \"selectedNodeId\": " << m_selectedNodeId << ",\n";
-        file << "      \"view\": {\n";
-        file << "        \"panX\": " << m_pan.x << ",\n";
-        file << "        \"panY\": " << m_pan.y << ",\n";
-        file << "        \"zoom\": " << m_zoom << "\n";
-        file << "      },\n";
-        WriteNodes();
-        file << "  }\n";
-        file << "}\n";
-        return file.str();
-    }
-
-    file << "{\n";
-    file << "  \"type\": \"CatalystBlueprint\",\n";
-    file << "  \"version\": 2,\n";
-    file << "  \"parent\": \"Actor\",\n";
-    file << "  \"seedDefaultGraph\": false,\n";
-    file << "  \"selectedNodeId\": " << m_selectedNodeId << ",\n";
-    file << "  \"selectedComponentId\": " << m_selectedComponentId << ",\n";
-    file << "  \"view\": {\n";
-    file << "    \"panX\": " << m_pan.x << ",\n";
-    file << "    \"panY\": " << m_pan.y << ",\n";
-    file << "    \"zoom\": " << m_zoom << "\n";
-    file << "  },\n";
-    file << "  \"components\": [\n";
-    for (size_t componentIndex = 0; componentIndex < m_components.size(); ++componentIndex) {
-        const BlueprintComponent& component = m_components[componentIndex];
-        const std::wstring storedAssetPath = MakeBlueprintReferencePath(m_assetPath, component.assetPath);
-        file << "    {\n";
-        file << "      \"id\": " << component.id << ",\n";
-        file << "      \"name\": \"" << EscapeJsonString(component.name) << "\",\n";
-        file << "      \"kind\": \"" << ComponentKindToString(component.kind) << "\",\n";
-        file << "      \"assetPath\": \"" << EscapeJsonString(WideToUtf8(storedAssetPath)) << "\",\n";
-        file << "      \"location\": ";
-        WriteJsonFloat3(file, component.location);
-        file << ",\n";
-        file << "      \"rotation\": ";
-        WriteJsonFloat3(file, component.rotation);
-        file << ",\n";
-        file << "      \"scale\": ";
-        WriteJsonFloat3(file, component.scale);
-        file << ",\n";
-        file << "      \"possessOnPlay\": " << (component.possessOnPlay ? "true" : "false") << ",\n";
-        file << "      \"triggerShape\": \"" << PhysicsColliderShapeToString(component.triggerShape) << "\",\n";
-        file << "      \"triggerExtents\": ";
-        WriteJsonFloat3(file, component.triggerExtents);
-        file << ",\n";
-        file << "      \"triggerRadius\": " << component.triggerRadius << ",\n";
-        file << "      \"exposeToGraph\": " << (component.exposeToGraph ? "true" : "false") << "\n";
-        file << "    }" << (componentIndex + 1 < m_components.size() ? "," : "") << "\n";
-    }
-    file << "  ],\n";
-    file << "  \"nodes\": [\n";
-    for (size_t nodeIndex = 0; nodeIndex < m_nodes.size(); ++nodeIndex) {
-        const Node& node = m_nodes[nodeIndex];
-        const std::string fieldCategory = !node.fieldCategory.empty()
-            ? node.fieldCategory
-            : (node.field != nullptr ? node.field->category : std::string());
-        const std::string fieldName = !node.fieldName.empty()
-            ? node.fieldName
-            : (node.field != nullptr ? node.field->name : std::string());
-        const std::wstring storedNodeAssetPath = MakeBlueprintReferencePath(m_assetPath, node.assetPath);
-        file << "    {\n";
-        file << "      \"id\": " << node.id << ",\n";
-        file << "      \"title\": \"" << EscapeJsonString(node.title) << "\",\n";
-        file << "      \"subtitle\": \"" << EscapeJsonString(node.subtitle) << "\",\n";
-        file << "      \"x\": " << node.x << ",\n";
-        file << "      \"y\": " << node.y << ",\n";
-        file << "      \"width\": " << node.width << ",\n";
-        file << "      \"height\": " << node.height << ",\n";
-        file << "      \"visual\": \"" << NodeVisualToString(node.visual) << "\",\n";
-        file << "      \"nodeTypeId\": \"" << EscapeJsonString(node.nodeTypeId) << "\",\n";
-        file << "      \"fieldCategory\": \"" << EscapeJsonString(fieldCategory) << "\",\n";
-        file << "      \"fieldName\": \"" << EscapeJsonString(fieldName) << "\",\n";
-        file << "      \"componentId\": " << node.componentId << ",\n";
-        file << "      \"componentName\": \"" << EscapeJsonString(node.componentName) << "\",\n";
-        file << "      \"componentKind\": \"" << ComponentKindToString(node.componentKind) << "\",\n";
-        file << "      \"uiElementKind\": \"" << UIElementKindToString(node.uiElementKind) << "\",\n";
-        file << "      \"canvasX\": " << node.canvasX << ",\n";
-        file << "      \"canvasY\": " << node.canvasY << ",\n";
-        file << "      \"canvasWidth\": " << node.canvasWidth << ",\n";
-        file << "      \"canvasHeight\": " << node.canvasHeight << ",\n";
-        file << "      \"displayText\": \"" << EscapeJsonString(node.displayText) << "\",\n";
-        file << "      \"tint\": ";
-        WriteJsonFloat4(file, node.tint);
-        file << ",\n";
-        file << "      \"assetPath\": \"" << EscapeJsonString(WideToUtf8(storedNodeAssetPath)) << "\",\n";
-        file << "      \"canDelete\": " << (node.canDelete ? "true" : "false") << "\n";
-        file << "    }" << (nodeIndex + 1 < m_nodes.size() ? "," : "") << "\n";
-    }
-    file << "  ],\n";
-    file << "  \"links\": [\n";
-    for (size_t linkIndex = 0; linkIndex < m_links.size(); ++linkIndex) {
-        const Link& link = m_links[linkIndex];
-        file << "    {\n";
-        file << "      \"fromNodeId\": " << link.fromNodeId << ",\n";
-        file << "      \"toNodeId\": " << link.toNodeId << ",\n";
-        file << "      \"fromPinKind\": \"" << PinKindToString(link.fromPinKind) << "\",\n";
-        file << "      \"toPinKind\": \"" << PinKindToString(link.toPinKind) << "\",\n";
-        file << "      \"color\": " << link.color << "\n";
-        file << "    }" << (linkIndex + 1 < m_links.size() ? "," : "") << "\n";
-    }
-    file << "  ]\n";
-    file << "}\n";
-    return file.str();
-}
-
-bool BlueprintEditor::SaveAsset() {
-    if (!HasOpenAsset()) {
-        return false;
-    }
-
-    try {
-        std::error_code ec;
-        fs::create_directories(fs::path(m_assetPath).parent_path(), ec);
-
-        const std::string assetDocument = BuildAssetDocument();
-        std::ofstream file(fs::path(m_assetPath), std::ios::binary | std::ios::trunc);
-        if (!file.is_open()) {
-            return false;
-        }
-        file << assetDocument;
-        file.close();
-        m_savedAssetDocument = assetDocument;
-        m_hasSavedAssetDocument = true;
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
 int BlueprintEditor::AddFieldColumn(std::span<const BlueprintFieldDescriptor> fields, float startX, float startY, float rowSpacing) {
     int firstNodeId = -1;
     int previousNodeId = -1;
@@ -3162,7 +1924,8 @@ int BlueprintEditor::AddUIElementNode(UIElementKind kind, float x, float y) {
         node.height = 136.0f;
         node.canvasWidth = 220.0f;
         node.canvasHeight = 34.0f;
-        node.displayText = "Sample Text";
+        // Default text for new TextBlock nodes is now empty to allow users to set their own text.
+        node.displayText = "";
         node.tint = UIntColorToFloat4(0xFFFFFFFF);
         break;
     case UIElementKind::None:
@@ -3912,247 +2675,4 @@ const BlueprintFieldDescriptor* BlueprintEditor::ResolveFieldDescriptor(const st
         }
     }
     return nullptr;
-}
-
-void BlueprintEditor::RefreshAssetBrowserItems() {
-    m_assetBrowserItems.clear();
-    m_assetBrowserDirty = false;
-
-    if (IsUIAsset()) {
-        return;
-    }
-
-    const std::wstring assetsRoot = GetProjectAssetsRoot();
-    if (assetsRoot.empty()) {
-        return;
-    }
-
-    std::error_code ec;
-    if (!fs::exists(assetsRoot, ec) || ec) {
-        return;
-    }
-
-    fs::recursive_directory_iterator iter(assetsRoot, fs::directory_options::skip_permission_denied, ec);
-    const fs::recursive_directory_iterator endIter;
-    while (!ec && iter != endIter) {
-        const fs::directory_entry& entry = *iter;
-        std::error_code entryError;
-        if (entry.is_regular_file(entryError) && !entryError && IsUIBlueprintPath(entry.path().wstring())) {
-            AssetBrowserItem item;
-            item.path = entry.path().lexically_normal().wstring();
-            item.label = entry.path().stem().string();
-            item.subtitle = entry.path().parent_path().filename().string();
-            m_assetBrowserItems.push_back(item);
-        }
-        iter.increment(ec);
-    }
-
-    std::sort(m_assetBrowserItems.begin(), m_assetBrowserItems.end(), [](const AssetBrowserItem& left, const AssetBrowserItem& right) {
-        return ToLowerCopy(left.label) < ToLowerCopy(right.label);
-    });
-}
-
-bool BlueprintEditor::TryAssignDraggedAsset(float screenX, float screenY, float canvasX, float canvasY) {
-    if (m_draggingAssetBrowserIndex < 0 ||
-        m_draggingAssetBrowserIndex >= static_cast<int>(m_assetBrowserItems.size())) {
-        return false;
-    }
-
-    const std::wstring assetPath = m_assetBrowserItems[static_cast<size_t>(m_draggingAssetBrowserIndex)].path;
-    PinReference hitPin = HitTestPin(screenX, screenY, canvasX, canvasY);
-    if (hitPin.nodeId >= 0 && hitPin.kind == PinKind::Data && hitPin.direction == PinDirection::Input) {
-        Node* hitNode = FindNode(hitPin.nodeId);
-        if (hitNode != nullptr && NodeAcceptsAssetDrop(*hitNode)) {
-            return AssignAssetToNode(*hitNode, assetPath);
-        }
-    }
-
-    Node* hitNode = HitTestNode(screenX, screenY, canvasX, canvasY);
-    if (hitNode != nullptr && NodeAcceptsAssetDrop(*hitNode)) {
-        return AssignAssetToNode(*hitNode, assetPath);
-    }
-
-    return false;
-}
-
-bool BlueprintEditor::AssignAssetToNode(Node& node, const std::wstring& assetPath) {
-    if (!NodeAcceptsAssetDrop(node)) {
-        return false;
-    }
-
-    node.assetPath = NormalizeAssetPath(assetPath);
-    if (node.assetPath.empty()) {
-        return false;
-    }
-
-    SetStatus("Assigned " + fs::path(node.assetPath).filename().string() + " to " + node.title + ".",
-              0xFF89D185, 2600);
-    return true;
-}
-
-bool BlueprintEditor::NodeAcceptsAssetDrop(const Node& node) const {
-    return IsCreateWidgetNodeType(node.nodeTypeId);
-}
-
-std::wstring BlueprintEditor::GetProjectAssetsRoot() const {
-    std::wstring sourcePath = m_assetPath;
-    if (sourcePath.empty()) {
-        return L"";
-    }
-
-    fs::path current = fs::path(sourcePath).parent_path();
-    while (!current.empty()) {
-        std::wstring folderName = current.filename().wstring();
-        std::transform(folderName.begin(), folderName.end(), folderName.begin(), towlower);
-        if (folderName == L"assets") {
-            return current.wstring();
-        }
-
-        fs::path parent = current.parent_path();
-        if (parent == current) {
-            break;
-        }
-        current = parent;
-    }
-
-    return fs::path(sourcePath).parent_path().wstring();
-}
-
-std::string BlueprintEditor::BuildFieldPreview(const GameObject* selectedObject, const BlueprintFieldDescriptor& field) const {
-    if (selectedObject == nullptr) {
-        return HasOpenAsset() ? "Asset default" : "No actor selected";
-    }
-
-    const char* rawFieldData = nullptr;
-    if (std::strcmp(field.category, "Physics.RigidBody") == 0) {
-        rawFieldData = reinterpret_cast<const char*>(&selectedObject->physics.rigidBody) + field.offset;
-    } else if (std::strcmp(field.category, "Physics.Collider") == 0) {
-        rawFieldData = reinterpret_cast<const char*>(&selectedObject->physics.collider) + field.offset;
-    }
-
-    if (rawFieldData == nullptr) {
-        return "Unknown binding";
-    }
-
-    char buffer[96];
-    switch (field.type) {
-    case BlueprintFieldType::Bool:
-        return (*reinterpret_cast<const bool*>(rawFieldData)) ? "True" : "False";
-    case BlueprintFieldType::Float:
-        std::snprintf(buffer, sizeof(buffer), "%.2f", *reinterpret_cast<const float*>(rawFieldData));
-        return buffer;
-    case BlueprintFieldType::Float3: {
-        const DirectX::XMFLOAT3& value = *reinterpret_cast<const DirectX::XMFLOAT3*>(rawFieldData);
-        std::snprintf(buffer, sizeof(buffer), "%.2f, %.2f, %.2f", value.x, value.y, value.z);
-        return buffer;
-    }
-    case BlueprintFieldType::Enum:
-    default:
-        if (std::strcmp(field.category, "Physics.RigidBody") == 0) {
-            return PhysicsBodyTypeToString(*reinterpret_cast<const PhysicsBodyType*>(rawFieldData));
-        }
-        if (std::strcmp(field.category, "Physics.Collider") == 0) {
-            return PhysicsColliderShapeToString(*reinterpret_cast<const PhysicsColliderShape*>(rawFieldData));
-        }
-        return "Enum";
-    }
-}
-
-std::string BlueprintEditor::BuildFieldTypeLabel(BlueprintFieldType type) const {
-    switch (type) {
-    case BlueprintFieldType::Bool:
-        return "Bool";
-    case BlueprintFieldType::Float3:
-        return "Vector3";
-    case BlueprintFieldType::Enum:
-        return "Enum";
-    case BlueprintFieldType::Float:
-    default:
-        return "Float";
-    }
-}
-
-std::string BlueprintEditor::BuildComponentTypeLabel(ComponentKind kind) const {
-    switch (kind) {
-    case ComponentKind::SkeletalMesh:
-        return "Skeletal Mesh";
-    case ComponentKind::Camera:
-        return "Camera";
-    case ComponentKind::Trigger:
-        return "Trigger";
-    case ComponentKind::StaticMesh:
-    default:
-        return "Static Mesh";
-    }
-}
-
-std::string BlueprintEditor::BuildComponentSummary(const BlueprintComponent& component) const {
-    switch (component.kind) {
-    case ComponentKind::Camera:
-        return component.possessOnPlay ? "Owns the play camera" : "Preview camera";
-    case ComponentKind::Trigger:
-        return std::string(PhysicsColliderShapeToString(component.triggerShape)) + " trigger";
-    case ComponentKind::SkeletalMesh:
-    case ComponentKind::StaticMesh:
-    default:
-        return component.assetPath.empty() ? "No actor asset assigned" : fs::path(component.assetPath).stem().string();
-    }
-}
-
-std::string BlueprintEditor::BuildUIElementTypeLabel(UIElementKind kind) const {
-    switch (kind) {
-    case UIElementKind::Canvas:
-        return "Canvas";
-    case UIElementKind::Button:
-        return "Button";
-    case UIElementKind::Image:
-        return "Image";
-    case UIElementKind::TextBlock:
-        return "TextBlock";
-    case UIElementKind::None:
-    default:
-        return "UI Element";
-    }
-}
-
-std::string BlueprintEditor::BuildTargetLabel(const GameObject* targetObject) const {
-    if (!m_assetPath.empty()) {
-        return fs::path(m_assetPath).stem().string();
-    }
-    if (targetObject == nullptr || targetObject->name.empty()) {
-        return "Level Blueprint";
-    }
-    return targetObject->name;
-}
-
-std::string BlueprintEditor::BuildVisualTypeLabel(NodeVisualKind visual) const {
-    switch (visual) {
-    case NodeVisualKind::Event:
-        return "Events";
-    case NodeVisualKind::Field:
-        return "Variables";
-    case NodeVisualKind::Component:
-        return "Components";
-    case NodeVisualKind::UIElement:
-        return "UI Elements";
-    case NodeVisualKind::Comment:
-        return "Comments";
-    case NodeVisualKind::Function:
-    default:
-        return "Functions";
-    }
-}
-
-void BlueprintEditor::SetStatus(const std::string& message, uint32_t color, DWORD durationMs) {
-    m_statusMessage = message;
-    m_statusColor = color;
-    m_statusUntil = GetTickCount() + durationMs;
-}
-
-int BlueprintEditor::NextNodeId() {
-    return m_nextNodeId++;
-}
-
-int BlueprintEditor::NextComponentId() {
-    return m_nextComponentId++;
 }

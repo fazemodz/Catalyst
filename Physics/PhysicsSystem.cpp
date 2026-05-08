@@ -358,6 +358,10 @@ void PhysicsSystem::InitializeDefaultCollider(GameObject& object, bool enableRig
 
 void PhysicsSystem::SimulateFixedStep(std::vector<GameObject>& gameObjects, float timeStep) {
     for (GameObject& object : gameObjects) {
+        if (!object.enabled) {
+            continue;
+        }
+
         ClampPhysicsSettings(object);
 
         if (!object.physics.rigidBody.enabled) {
@@ -380,9 +384,12 @@ void PhysicsSystem::SimulateFixedStep(std::vector<GameObject>& gameObjects, floa
         }
     }
 
-    for (int iteration = 0; iteration < 3; ++iteration) {
+        for (int iteration = 0; iteration < 3; ++iteration) {
         for (size_t i = 0; i < gameObjects.size(); ++i) {
             for (size_t j = i + 1; j < gameObjects.size(); ++j) {
+                if (!gameObjects[i].enabled || !gameObjects[j].enabled) {
+                    continue;
+                }
                 ResolveCollision(gameObjects[i], gameObjects[j]);
             }
         }

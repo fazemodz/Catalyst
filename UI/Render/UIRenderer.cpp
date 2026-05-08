@@ -32,8 +32,6 @@ void UIRenderer::CreatePipelineState(ID3D12Device* device, DXGI_FORMAT rtvFormat
     rp[1].DescriptorTable.NumDescriptorRanges = 1;
     rp[1].DescriptorTable.pDescriptorRanges = ranges;
     rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    // THE FIX: Changed from POINT to LINEAR to make text render cleanly
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;

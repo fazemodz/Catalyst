@@ -62,6 +62,7 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
 
     for (int i = 0; i < gameObjects.size(); i++) {
         const GameObject& obj = gameObjects[i]; 
+        if (!obj.enabled) continue;
         if (obj.type == ObjectType::Skybox || obj.type == ObjectType::PostProcessVolume || obj.type == ObjectType::Light) continue; 
         Mesh* meshToDraw = obj.asset ? obj.asset->mesh : nullptr; 
         if (!meshToDraw) continue;

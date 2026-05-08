@@ -19,10 +19,16 @@ std::wstring BrowseForTextureFile(HWND ownerWindow);
 std::wstring BrowseForMaterialFile(HWND ownerWindow);
 std::wstring BrowseForBlueprintFile(HWND ownerWindow);
 std::wstring BrowseForUIBlueprintFile(HWND ownerWindow);
+std::wstring BrowseForMapFile(HWND ownerWindow);
 
 bool ImportAssetToProject(const std::wstring& sourcePath, const std::wstring& projectAssetsFolder, const std::wstring& newName, std::wstring* importedPath = nullptr);
 
 void CreateNewProject(const std::wstring& targetFolder, const std::string& projectName);
+bool EnsureProjectCodeWorkspaceReady(const std::wstring& projectFilePath);
+std::wstring ResolveProjectCodeSolutionPath(const std::wstring& projectFilePath);
+std::wstring ResolveProjectGameDllPath(const std::wstring& projectFilePath, bool buildRelease);
+bool OpenProjectCodeSolution(const std::wstring& projectFilePath);
+bool OpenProjectCodeFile(const std::wstring& projectFilePath, const std::wstring& codeFilePath);
 
 void AddRecentProject(const std::wstring& path);
 void RemoveRecentProject(const std::wstring& path);
@@ -33,3 +39,14 @@ ProjectInfo ParseProjectFile(const std::wstring& path);
 std::wstring ResolveProjectStartupScenePath(const std::wstring& projectFilePath);
 std::wstring ResolveProjectStartupSceneSavePath(const std::wstring& projectFilePath);
 bool UpdateProjectStartupScene(const std::wstring& projectFilePath, const std::wstring& startupScenePath);
+
+struct AppLaunchRequest {
+    bool play = false;
+    std::wstring projectFilePath;
+    std::wstring mapPath;
+};
+
+bool BuildAdjacentPlayerLaunchRequest(AppLaunchRequest& outRequest);
+
+void SetAppLaunchRequest(const AppLaunchRequest& request);
+bool ConsumeAppLaunchRequest(AppLaunchRequest& outRequest);

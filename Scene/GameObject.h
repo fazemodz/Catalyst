@@ -1,6 +1,7 @@
 #pragma once
 #include "Asset.h"
 #include "../Physics/PhysicsTypes.h"
+#include <cstdint>
 #include <directxmath.h>
 #include <vector>
 
@@ -18,12 +19,33 @@ struct PostProcessSettings {
     float blendRadius = 1.0f;
 };
 
+struct NativeScriptComponentDesc {
+    NativeScriptComponentDesc();
+
+    uint64_t id = 0;
+    std::string className;
+    bool enabled = true;
+};
+
 struct GameObject {
+    GameObject();
+
+    uint64_t id = 0;
     std::string name;
+    std::string tag;
+    std::string animationState;
+    std::string animationTrigger;
+    uint32_t layer = 0;
+    bool enabled = true;
+    uint64_t parentId = 0;
+    bool inheritParentTransform = false;
 
     DirectX::XMFLOAT3 position = {0,0,0};
     DirectX::XMFLOAT3 rotation = {0,0,0};
     DirectX::XMFLOAT3 scale = {1,1,1};
+    DirectX::XMFLOAT3 localPosition = {0,0,0};
+    DirectX::XMFLOAT3 localRotation = {0,0,0};
+    DirectX::XMFLOAT3 localScale = {1,1,1};
 
     DirectX::XMFLOAT4 color = {1,1,1,1};
     DirectX::XMFLOAT4 skyHorizonColor = {1,1,1,1};
@@ -38,6 +60,7 @@ struct GameObject {
     Texture* overrideAO        = nullptr;
 
     std::wstring blueprintAssetPath = L"";
+    std::vector<NativeScriptComponentDesc> nativeScriptComponents;
     bool blueprintPlayerControlled = false;
     bool blueprintSpaceJumpEnabled = false;
     float blueprintMoveSpeed = 6.0f;

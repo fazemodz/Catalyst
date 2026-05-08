@@ -22,6 +22,18 @@ std::wstring BuildBlueprintEditorTitle(const std::wstring& assetPath) {
     return L"Catalyst Blueprint Editor - " + fs::path(assetPath).stem().wstring();
 }
 
+std::wstring BuildStandalonePlayTitle(const AppLaunchRequest& request) {
+    if (!request.projectFilePath.empty()) {
+        const ProjectInfo info = ParseProjectFile(request.projectFilePath);
+        if (!info.ProjectName.empty()) {
+            return info.ProjectName;
+        }
+        return fs::path(request.projectFilePath).stem().wstring();
+    }
+
+    return L"Catalyst";
+}
+
 std::wstring JoinHumanList(const std::vector<std::wstring>& items) {
     if (items.empty()) {
         return L"";
@@ -243,6 +255,8 @@ bool EngineApp::OpenActorViewerWindow(const std::wstring& assetPath) {
         DestroyWindow(viewerWindow->hwnd);
         return false;
     }
+    // Render a simple preview of the blueprint in the actor viewer.
+    viewerWindow->renderer->RenderBlueprintPreview(assetPath);
 
     ShowWindow(viewerWindow->hwnd, SW_SHOW);
     UpdateWindow(viewerWindow->hwnd);
@@ -322,22 +336,28 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, kWindowClassName, NULL };
     RegisterClassEx(&wc);
 
-   
-    DWORD launcherStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    AppLaunchRequest startupRequest;
+    const bool standalonePlayLaunch = ConsumeAppLaunchRequest(startupRequest) && startupRequest.play;
+    if (standalonePlayLaunch) {
+        SetAppLaunchRequest(startupRequest);
+    }
 
-   
+    DWORD launcherStyle = standalonePlayLaunch
+        ? WS_OVERLAPPEDWINDOW
+        : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
+
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
-    int launchW = 1000;
-    int launchH = 650;
+    int launchW = standalonePlayLaunch ? screenW : 1000;
+    int launchH = standalonePlayLaunch ? screenH : 650;
 
     WindowContext* mainWindow = CreateWindowContext(
-        L"Catalyst Launcher",
+        standalonePlayLaunch ? BuildStandalonePlayTitle(startupRequest) : L"Catalyst Launcher",
         launcherStyle,
         launchW,
         launchH,
-        (screenW - launchW) / 2,
-        (screenH - launchH) / 2);
+        standalonePlayLaunch ? 0 : (screenW - launchW) / 2,
+        standalonePlayLaunch ? 0 : (screenH - launchH) / 2);
     if (!mainWindow) {
         UnregisterClass(wc.lpszClassName, wc.hInstance);
         s_instance = nullptr;
@@ -345,7 +365,7 @@ void EngineApp::Run(HINSTANCE hInstance, int nShowCmd) {
     }
     mainWindow->isPrimaryWindow = true;
 
-    ShowWindow(mainWindow->hwnd, nShowCmd);
+    ShowWindow(mainWindow->hwnd, standalonePlayLaunch ? SW_MAXIMIZE : nShowCmd);
     UpdateWindow(mainWindow->hwnd);
 
     MSG msg = {};

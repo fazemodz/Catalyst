@@ -10,11 +10,13 @@ namespace fs = std::filesystem;
 
 namespace BlueprintNodes {
 namespace {
-const std::array<BlueprintNodeTemplate, 4> kGameplayNodeTemplates = {{
+const std::array<BlueprintNodeTemplate, 6> kGameplayNodeTemplates = {{
     {kPlayerCharacterControllerNodeId, "Player Character", "Makes the owning object controllable with WASD", 270.0f, 156.0f},
     {kPlayerSpaceJumpNodeId, "Jump On Space", "Makes the Player Character jump when Space is pressed", 270.0f, 156.0f},
     {kCreateWidgetNodeId, "Create Widget", "Creates a UI Blueprint widget that can be added to the viewport", 282.0f, 164.0f},
-    {kAddToViewportNodeId, "Add To Viewport", "Adds a created widget to the active viewport overlay", 278.0f, 160.0f}
+    {kAddToViewportNodeId, "Add To Viewport", "Adds a created widget to the active viewport overlay", 278.0f, 160.0f},
+    {kSwapWidgetNodeId, "Swap Widget", "Replaces the current widget with another UI Blueprint", 278.0f, 160.0f},
+    {kOpenLevelNodeId, "Open Level", "Loads a different map during play", 268.0f, 156.0f}
 }};
 
 std::string EscapeRegex(const std::string& value) {

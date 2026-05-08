@@ -4,18 +4,21 @@
 #include <DirectXCollision.h> 
 #include <algorithm>
 #include <cfloat>
+#include <cstring>
 #include <cwctype>
 #include <cmath>
 #include <cctype>
 #include <iomanip>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <thread>
 #include <vector>
 #include "PrimitiveGenerator.h"
 #include "ModelLoader.h"
 #include "../Blueprint/Nodes/BlueprintNodeLibrary.h"
+#include "../Resources/PakFile.h"
 #include "../Launcher.h" 
 
 using namespace DirectX;
@@ -41,6 +44,16 @@ std::wstring NormalizeAssetPath(const std::wstring& path) {
 
     fs::path normalized = absolutePath.lexically_normal();
     return normalized.wstring();
+}
+
+std::string TrimAsciiWhitespace(const std::string& value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    }).base();
+    return first >= last ? std::string() : std::string(first, last);
 }
 
 std::wstring FindProjectRootFromAssetPath(const std::wstring& assetPath) {
@@ -152,6 +165,421 @@ std::wstring DecodeStoredPath(const std::string& value) {
         converted.assign(value.begin(), value.end());
     }
     return converted;
+}
+
+Catalyst::Vec3 ToCatalystVec3(const XMFLOAT3& value) {
+    return Catalyst::Vec3{value.x, value.y, value.z};
+}
+
+XMFLOAT3 ToXmfFloat3(const Catalyst::Vec3& value) {
+    return XMFLOAT3{value.x, value.y, value.z};
+}
+
+Catalyst::TransformData ToCatalystTransform(const GameObject& object) {
+    Catalyst::TransformData transform;
+    transform.position = ToCatalystVec3(object.position);
+    transform.rotation = ToCatalystVec3(object.rotation);
+    transform.scale = ToCatalystVec3(object.scale);
+    return transform;
+}
+
+void ApplyCatalystTransform(GameObject& object, const Catalyst::TransformData& transform) {
+    object.position = ToXmfFloat3(transform.position);
+    object.rotation = ToXmfFloat3(transform.rotation);
+    object.scale = ToXmfFloat3(transform.scale);
+}
+
+Catalyst::ColliderData ToCatalystCollider(const GameObject& object) {
+    Catalyst::ColliderData collider;
+    collider.enabled = object.physics.collider.enabled;
+    collider.isTrigger = object.physics.collider.isTrigger;
+    collider.shape = object.physics.collider.shape == PhysicsColliderShape::Sphere
+        ? Catalyst::ColliderShape::Sphere
+        : Catalyst::ColliderShape::Box;
+    collider.centerOffset = ToCatalystVec3(object.physics.collider.centerOffset);
+    collider.boxExtents = ToCatalystVec3(object.physics.collider.boxExtents);
+    collider.sphereRadius = object.physics.collider.sphereRadius;
+    return collider;
+}
+
+void ApplyCatalystCollider(GameObject& object, const Catalyst::ColliderData& collider) {
+    object.physics.collider.enabled = collider.enabled;
+    object.physics.collider.isTrigger = collider.isTrigger;
+    object.physics.collider.shape = collider.shape == Catalyst::ColliderShape::Sphere
+        ? PhysicsColliderShape::Sphere
+        : PhysicsColliderShape::Box;
+    object.physics.collider.centerOffset = ToXmfFloat3(collider.centerOffset);
+    object.physics.collider.boxExtents = ToXmfFloat3(collider.boxExtents);
+    object.physics.collider.sphereRadius = collider.sphereRadius;
+}
+
+Catalyst::Vec4 ToCatalystVec4(const XMFLOAT4& value) {
+    return Catalyst::Vec4{value.x, value.y, value.z, value.w};
+}
+
+XMFLOAT4 ToXmfFloat4(const Catalyst::Vec4& value) {
+    return XMFLOAT4{value.x, value.y, value.z, value.w};
+}
+
+Catalyst::RigidbodyData ToCatalystRigidBody(const GameObject& object) {
+    Catalyst::RigidbodyData rigidBody;
+    rigidBody.enabled = object.physics.rigidBody.enabled;
+    rigidBody.bodyType = object.physics.rigidBody.bodyType == PhysicsBodyType::Static
+        ? Catalyst::PhysicsBodyType::Static
+        : (object.physics.rigidBody.bodyType == PhysicsBodyType::Kinematic
+            ? Catalyst::PhysicsBodyType::Kinematic
+            : Catalyst::PhysicsBodyType::Dynamic);
+    rigidBody.useGravity = object.physics.rigidBody.useGravity;
+    rigidBody.mass = object.physics.rigidBody.mass;
+    rigidBody.linearDamping = object.physics.rigidBody.linearDamping;
+    rigidBody.restitution = object.physics.rigidBody.restitution;
+    rigidBody.velocity = ToCatalystVec3(object.physics.rigidBody.velocity);
+    return rigidBody;
+}
+
+void ApplyCatalystRigidBody(GameObject& object, const Catalyst::RigidbodyData& rigidBody) {
+    object.physics.rigidBody.enabled = rigidBody.enabled;
+    object.physics.rigidBody.bodyType = rigidBody.bodyType == Catalyst::PhysicsBodyType::Static
+        ? PhysicsBodyType::Static
+        : (rigidBody.bodyType == Catalyst::PhysicsBodyType::Kinematic ? PhysicsBodyType::Kinematic : PhysicsBodyType::Dynamic);
+    object.physics.rigidBody.useGravity = rigidBody.useGravity;
+    object.physics.rigidBody.mass = rigidBody.mass;
+    object.physics.rigidBody.linearDamping = rigidBody.linearDamping;
+    object.physics.rigidBody.restitution = rigidBody.restitution;
+    object.physics.rigidBody.velocity = ToXmfFloat3(rigidBody.velocity);
+}
+
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+struct ScriptColliderWorldState {
+    XMFLOAT3 center = {0.0f, 0.0f, 0.0f};
+    XMFLOAT3 boxExtents = {0.5f, 0.5f, 0.5f};
+    float sphereRadius = 0.5f;
+};
+
+struct ScriptCollisionEventState {
+    bool intersects = false;
+    bool isTrigger = false;
+    XMFLOAT3 normal = {0.0f, 1.0f, 0.0f};
+    float penetration = 0.0f;
+};
+
+XMFLOAT3 AddFloat3(const XMFLOAT3& a, const XMFLOAT3& b) {
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+XMFLOAT3 SubtractFloat3(const XMFLOAT3& a, const XMFLOAT3& b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+XMFLOAT3 ScaleFloat3(const XMFLOAT3& value, float scalar) {
+    return {value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+XMFLOAT3 MultiplyFloat3(const XMFLOAT3& a, const XMFLOAT3& b) {
+    return {a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
+XMFLOAT3 AbsFloat3(const XMFLOAT3& value) {
+    return {std::abs(value.x), std::abs(value.y), std::abs(value.z)};
+}
+
+XMFLOAT3 TransformFloat3Normal(const XMFLOAT3& value, const XMMATRIX& matrix) {
+    XMFLOAT3 transformed;
+    XMStoreFloat3(&transformed, XMVector3TransformNormal(XMLoadFloat3(&value), matrix));
+    return transformed;
+}
+
+float ClampFloatValue(float value, float minimum, float maximum) {
+    return (std::max)(minimum, (std::min)(maximum, value));
+}
+
+float DotFloat3(const XMFLOAT3& a, const XMFLOAT3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+float LengthSquaredFloat3(const XMFLOAT3& value) {
+    return DotFloat3(value, value);
+}
+
+float MaxComponentFloat3(const XMFLOAT3& value) {
+    return (std::max)(value.x, (std::max)(value.y, value.z));
+}
+
+ScriptColliderWorldState BuildScriptColliderWorldState(const GameObject& object) {
+    ScriptColliderWorldState worldState;
+    const XMFLOAT3 absoluteScale = AbsFloat3(object.scale);
+    const XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(object.rotation.x, object.rotation.y, object.rotation.z);
+    const XMFLOAT3 scaledOffset = MultiplyFloat3(object.physics.collider.centerOffset, object.scale);
+    const XMFLOAT3 rotatedOffset = TransformFloat3Normal(scaledOffset, rotationMatrix);
+    worldState.center = AddFloat3(object.position, rotatedOffset);
+
+    const XMFLOAT3 scaledExtents = {
+        (std::max)(0.05f, object.physics.collider.boxExtents.x * absoluteScale.x),
+        (std::max)(0.05f, object.physics.collider.boxExtents.y * absoluteScale.y),
+        (std::max)(0.05f, object.physics.collider.boxExtents.z * absoluteScale.z)
+    };
+    const XMFLOAT3 axisX = TransformFloat3Normal({scaledExtents.x, 0.0f, 0.0f}, rotationMatrix);
+    const XMFLOAT3 axisY = TransformFloat3Normal({0.0f, scaledExtents.y, 0.0f}, rotationMatrix);
+    const XMFLOAT3 axisZ = TransformFloat3Normal({0.0f, 0.0f, scaledExtents.z}, rotationMatrix);
+    worldState.boxExtents = {
+        (std::max)(0.05f, std::abs(axisX.x) + std::abs(axisY.x) + std::abs(axisZ.x)),
+        (std::max)(0.05f, std::abs(axisX.y) + std::abs(axisY.y) + std::abs(axisZ.y)),
+        (std::max)(0.05f, std::abs(axisX.z) + std::abs(axisY.z) + std::abs(axisZ.z))
+    };
+    worldState.sphereRadius = (std::max)(0.05f, object.physics.collider.sphereRadius * MaxComponentFloat3(absoluteScale));
+    return worldState;
+}
+
+ScriptCollisionEventState BuildScriptOverlapState(const GameObject& a, const GameObject& b) {
+    ScriptCollisionEventState state;
+    if (!a.physics.collider.enabled || !b.physics.collider.enabled) {
+        return state;
+    }
+
+    const ScriptColliderWorldState worldA = BuildScriptColliderWorldState(a);
+    const ScriptColliderWorldState worldB = BuildScriptColliderWorldState(b);
+    state.isTrigger = a.physics.collider.isTrigger || b.physics.collider.isTrigger;
+
+    if (a.physics.collider.shape == PhysicsColliderShape::Sphere &&
+        b.physics.collider.shape == PhysicsColliderShape::Sphere) {
+        const XMFLOAT3 delta = SubtractFloat3(worldB.center, worldA.center);
+        const float radiusSum = worldA.sphereRadius + worldB.sphereRadius;
+        const float distanceSquared = LengthSquaredFloat3(delta);
+        if (distanceSquared > radiusSum * radiusSum) {
+            return state;
+        }
+
+        const float distance = std::sqrt(distanceSquared);
+        state.intersects = true;
+        state.normal = distance > 0.00001f ? ScaleFloat3(delta, 1.0f / distance) : XMFLOAT3{0.0f, 1.0f, 0.0f};
+        state.penetration = radiusSum - distance;
+        return state;
+    }
+
+    if (a.physics.collider.shape == PhysicsColliderShape::Box &&
+        b.physics.collider.shape == PhysicsColliderShape::Box) {
+        const XMFLOAT3 delta = SubtractFloat3(worldB.center, worldA.center);
+        const XMFLOAT3 overlap = {
+            worldA.boxExtents.x + worldB.boxExtents.x - std::abs(delta.x),
+            worldA.boxExtents.y + worldB.boxExtents.y - std::abs(delta.y),
+            worldA.boxExtents.z + worldB.boxExtents.z - std::abs(delta.z)
+        };
+        if (overlap.x <= 0.0f || overlap.y <= 0.0f || overlap.z <= 0.0f) {
+            return state;
+        }
+
+        state.intersects = true;
+        state.penetration = overlap.x;
+        state.normal = {delta.x >= 0.0f ? 1.0f : -1.0f, 0.0f, 0.0f};
+        if (overlap.y < state.penetration) {
+            state.penetration = overlap.y;
+            state.normal = {0.0f, delta.y >= 0.0f ? 1.0f : -1.0f, 0.0f};
+        }
+        if (overlap.z < state.penetration) {
+            state.penetration = overlap.z;
+            state.normal = {0.0f, 0.0f, delta.z >= 0.0f ? 1.0f : -1.0f};
+        }
+        return state;
+    }
+
+    const bool aSphere = a.physics.collider.shape == PhysicsColliderShape::Sphere;
+    const ScriptColliderWorldState& sphere = aSphere ? worldA : worldB;
+    const ScriptColliderWorldState& box = aSphere ? worldB : worldA;
+    const XMFLOAT3 sphereLocal = SubtractFloat3(sphere.center, box.center);
+    const XMFLOAT3 closestLocal = {
+        ClampFloatValue(sphereLocal.x, -box.boxExtents.x, box.boxExtents.x),
+        ClampFloatValue(sphereLocal.y, -box.boxExtents.y, box.boxExtents.y),
+        ClampFloatValue(sphereLocal.z, -box.boxExtents.z, box.boxExtents.z)
+    };
+    const XMFLOAT3 closestPoint = AddFloat3(box.center, closestLocal);
+    const XMFLOAT3 delta = SubtractFloat3(closestPoint, sphere.center);
+    const float distanceSquared = LengthSquaredFloat3(delta);
+    if (distanceSquared > sphere.sphereRadius * sphere.sphereRadius) {
+        return state;
+    }
+
+    state.intersects = true;
+    if (distanceSquared > 0.00001f) {
+        const float distance = std::sqrt(distanceSquared);
+        state.normal = ScaleFloat3(delta, 1.0f / distance);
+        state.penetration = sphere.sphereRadius - distance;
+    } else {
+        state.normal = {sphereLocal.x >= 0.0f ? 1.0f : -1.0f, 0.0f, 0.0f};
+        state.penetration = sphere.sphereRadius;
+    }
+    if (!aSphere) {
+        state.normal = ScaleFloat3(state.normal, -1.0f);
+    }
+    return state;
+}
+
+bool IsVirtualKeyDownNow(int virtualKey) {
+    return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+}
+
+bool IsVirtualKeyPressedNow(int virtualKey) {
+    return (GetAsyncKeyState(virtualKey) & 0x0001) != 0;
+}
+
+bool EvaluateActionState(const std::string& actionName, bool justPressed) {
+    const std::string key = ToLowerAscii(TrimAsciiWhitespace(actionName));
+    const auto readKey = [&](int virtualKey) {
+        return justPressed ? IsVirtualKeyPressedNow(virtualKey) : IsVirtualKeyDownNow(virtualKey);
+    };
+
+    if (key == "jump") return readKey(VK_SPACE);
+    if (key == "interact" || key == "use") return readKey('E');
+    if (key == "sprint") return readKey(VK_SHIFT);
+    if (key == "fire" || key == "primaryfire") return readKey(VK_LBUTTON);
+    if (key == "secondaryfire" || key == "aim") return readKey(VK_RBUTTON);
+    if (key == "crouch") return readKey(VK_CONTROL);
+    if (key == "reload") return readKey('R');
+    if (key == "pause") return readKey(VK_ESCAPE);
+    return false;
+}
+
+float EvaluateAxisState(const std::string& axisName) {
+    const std::string key = ToLowerAscii(TrimAsciiWhitespace(axisName));
+    if (key == "horizontal" || key == "moveright") {
+        return (IsVirtualKeyDownNow('D') ? 1.0f : 0.0f) - (IsVirtualKeyDownNow('A') ? 1.0f : 0.0f);
+    }
+    if (key == "vertical" || key == "moveforward") {
+        return (IsVirtualKeyDownNow('W') ? 1.0f : 0.0f) - (IsVirtualKeyDownNow('S') ? 1.0f : 0.0f);
+    }
+    if (key == "up" || key == "moveup") {
+        return (IsVirtualKeyDownNow('E') ? 1.0f : 0.0f) - (IsVirtualKeyDownNow('Q') ? 1.0f : 0.0f);
+    }
+    return 0.0f;
+}
+
+bool RayIntersectsAabb(const XMFLOAT3& origin, const XMFLOAT3& direction, const XMFLOAT3& center,
+                       const XMFLOAT3& extents, float maxDistance, float& outDistance, XMFLOAT3& outNormal) {
+    const XMFLOAT3 minPoint = {center.x - extents.x, center.y - extents.y, center.z - extents.z};
+    const XMFLOAT3 maxPoint = {center.x + extents.x, center.y + extents.y, center.z + extents.z};
+    float tMin = 0.0f;
+    float tMax = maxDistance;
+    outNormal = {0.0f, 1.0f, 0.0f};
+
+    const auto testAxis = [&](float originAxis, float directionAxis, float minAxis, float maxAxis,
+                              XMFLOAT3 negativeNormal, XMFLOAT3 positiveNormal) -> bool {
+        if (std::abs(directionAxis) < 0.00001f) {
+            return originAxis >= minAxis && originAxis <= maxAxis;
+        }
+
+        float invDirection = 1.0f / directionAxis;
+        float t0 = (minAxis - originAxis) * invDirection;
+        float t1 = (maxAxis - originAxis) * invDirection;
+        XMFLOAT3 enterNormal = negativeNormal;
+        if (t0 > t1) {
+            std::swap(t0, t1);
+            enterNormal = positiveNormal;
+        }
+
+        if (t0 > tMin) {
+            tMin = t0;
+            outNormal = enterNormal;
+        }
+        tMax = (std::min)(tMax, t1);
+        return tMax >= tMin;
+    };
+
+    if (!testAxis(origin.x, direction.x, minPoint.x, maxPoint.x, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}) ||
+        !testAxis(origin.y, direction.y, minPoint.y, maxPoint.y, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}) ||
+        !testAxis(origin.z, direction.z, minPoint.z, maxPoint.z, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, 1.0f})) {
+        return false;
+    }
+
+    outDistance = tMin;
+    return outDistance >= 0.0f && outDistance <= maxDistance;
+}
+
+struct EngineScriptStateBlob {
+    std::map<std::string, std::string> values;
+};
+
+void WriteScriptStateFloat(void* context, const char* key, float value) {
+    if (context == nullptr || key == nullptr) {
+        return;
+    }
+
+    auto& blob = *static_cast<EngineScriptStateBlob*>(context);
+    blob.values[key] = std::to_string(value);
+}
+
+void WriteScriptStateBool(void* context, const char* key, bool value) {
+    if (context == nullptr || key == nullptr) {
+        return;
+    }
+
+    auto& blob = *static_cast<EngineScriptStateBlob*>(context);
+    blob.values[key] = value ? "true" : "false";
+}
+
+void WriteScriptStateString(void* context, const char* key, const char* value) {
+    if (context == nullptr || key == nullptr) {
+        return;
+    }
+
+    auto& blob = *static_cast<EngineScriptStateBlob*>(context);
+    blob.values[key] = value != nullptr ? value : "";
+}
+
+bool ReadScriptStateFloat(void* context, const char* key, float* value) {
+    if (context == nullptr || key == nullptr || value == nullptr) {
+        return false;
+    }
+
+    const auto& blob = *static_cast<const EngineScriptStateBlob*>(context);
+    const auto found = blob.values.find(key);
+    if (found == blob.values.end()) {
+        return false;
+    }
+
+    try {
+        *value = std::stof(found->second);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ReadScriptStateBool(void* context, const char* key, bool* value) {
+    if (context == nullptr || key == nullptr || value == nullptr) {
+        return false;
+    }
+
+    const auto& blob = *static_cast<const EngineScriptStateBlob*>(context);
+    const auto found = blob.values.find(key);
+    if (found == blob.values.end()) {
+        return false;
+    }
+
+    *value = (found->second == "true" || found->second == "1");
+    return true;
+}
+
+bool ReadScriptStateString(void* context, const char* key, char* buffer, uint32_t bufferSize) {
+    if (context == nullptr || key == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    const auto& blob = *static_cast<const EngineScriptStateBlob*>(context);
+    const auto found = blob.values.find(key);
+    if (found == blob.values.end()) {
+        return false;
+    }
+
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, found->second.size());
+    std::memcpy(buffer, found->second.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
 }
 
 std::string EscapeJsonString(const std::string& value) {
@@ -646,6 +1074,18 @@ uint32_t Float4ToUIntColor(const DirectX::XMFLOAT4& color) {
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+uint32_t BrightenPackedColor(uint32_t color, float bias) {
+    const auto Adjust = [bias](uint32_t value) {
+        return static_cast<uint32_t>((std::min)(255.0f, value + bias * 255.0f));
+    };
+
+    const uint32_t a = (color >> 24) & 0xFF;
+    const uint32_t r = Adjust((color >> 16) & 0xFF);
+    const uint32_t g = Adjust((color >> 8) & 0xFF);
+    const uint32_t b = Adjust(color & 0xFF);
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
 bool IsUIButtonNodeType(const std::string& nodeTypeId) {
     return nodeTypeId == BlueprintNodes::kButtonElementNodeId;
 }
@@ -880,7 +1320,7 @@ std::string DXRenderer::BuildSceneDocument(const std::vector<GameObject>& object
     outFile << std::fixed << std::setprecision(6);
     outFile << "{\n";
     outFile << "  \"type\": \"CatalystScene\",\n";
-    outFile << "  \"version\": 2,\n";
+    outFile << "  \"version\": 4,\n";
     outFile << "  \"objects\": [\n";
 
     for (size_t objectIndex = 0; objectIndex < objectsToSave.size(); ++objectIndex) {
@@ -899,11 +1339,29 @@ std::string DXRenderer::BuildSceneDocument(const std::vector<GameObject>& object
 
         outFile << "    {\n";
         outFile << "      \"name\": \"" << EscapeJsonString(object.name) << "\",\n";
+        outFile << "      \"tag\": \"" << EscapeJsonString(object.tag) << "\",\n";
+        outFile << "      \"animationState\": \"" << EscapeJsonString(object.animationState) << "\",\n";
+        outFile << "      \"layer\": " << object.layer << ",\n";
+        outFile << "      \"enabled\": " << (object.enabled ? "true" : "false") << ",\n";
         outFile << "      \"type\": \"" << ObjectTypeToString(object.type) << "\",\n";
+        outFile << "      \"id\": " << object.id << ",\n";
+        outFile << "      \"parentId\": " << object.parentId << ",\n";
+        outFile << "      \"inheritParentTransform\": " << (object.inheritParentTransform ? "true" : "false") << ",\n";
         outFile << "      \"assetId\": " << (object.asset ? object.asset->id : -1) << ",\n";
         outFile << "      \"assetName\": \"" << EscapeJsonString(object.asset ? object.asset->name : "") << "\",\n";
         outFile << "      \"assetSource\": \"" << EscapeJsonString(WideToUtf8(assetSourcePath)) << "\",\n";
         outFile << "      \"blueprintAsset\": \"" << EscapeJsonString(WideToUtf8(blueprintAssetPath)) << "\",\n";
+        outFile << "      \"components\": [\n";
+        for (size_t componentIndex = 0; componentIndex < object.nativeScriptComponents.size(); ++componentIndex) {
+            const NativeScriptComponentDesc& component = object.nativeScriptComponents[componentIndex];
+            outFile << "        {\n";
+            outFile << "          \"type\": \"NativeScript\",\n";
+            outFile << "          \"id\": " << component.id << ",\n";
+            outFile << "          \"className\": \"" << EscapeJsonString(component.className) << "\",\n";
+            outFile << "          \"enabled\": " << (component.enabled ? "true" : "false") << "\n";
+            outFile << "        }" << (componentIndex + 1 < object.nativeScriptComponents.size() ? "," : "") << "\n";
+        }
+        outFile << "      ],\n";
         outFile << "      \"position\": ";
         WriteJsonFloat3(outFile, object.position);
         outFile << ",\n";
@@ -912,6 +1370,15 @@ std::string DXRenderer::BuildSceneDocument(const std::vector<GameObject>& object
         outFile << ",\n";
         outFile << "      \"scale\": ";
         WriteJsonFloat3(outFile, object.scale);
+        outFile << ",\n";
+        outFile << "      \"localPosition\": ";
+        WriteJsonFloat3(outFile, object.localPosition);
+        outFile << ",\n";
+        outFile << "      \"localRotation\": ";
+        WriteJsonFloat3(outFile, object.localRotation);
+        outFile << ",\n";
+        outFile << "      \"localScale\": ";
+        WriteJsonFloat3(outFile, object.localScale);
         outFile << ",\n";
         outFile << "      \"color\": ";
         WriteJsonFloat4(outFile, object.color);
@@ -1195,7 +1662,9 @@ void DXRenderer::RefreshWindowTitle() {
     }
 
     std::wstring title;
-    if (m_engineState == EngineState::ProjectLoading) {
+    if (m_editorUI.State.standalonePlay) {
+        title = ResolveActiveProjectDisplayName();
+    } else if (m_engineState == EngineState::ProjectLoading) {
         title = L"Catalyst Loading - " + ResolveActiveProjectDisplayName();
     } else if (m_engineState == EngineState::Editor) {
         title = L"Catalyst Editor - " + ResolveActiveProjectDisplayName() + L" (" + ResolveActiveMapDisplayName() + L")";
@@ -1276,6 +1745,1531 @@ void DXRenderer::RefreshSceneBlueprintRuntime() {
     }
 }
 
+void DXRenderer::PollScriptModuleHost() {
+    m_scriptModuleHost.SetProject(ResolveActiveProjectFilePath());
+    m_scriptModuleHost.PollSourceChanges(!m_editorUI.State.isPlaying);
+}
+
+void DXRenderer::StartNativeScriptRuntime() {
+    StopNativeScriptRuntime();
+    m_scriptTimers.clear();
+    m_pendingDestroyedObjectIds.clear();
+
+    std::wstring loadError;
+    if (!m_scriptModuleHost.EnsureModuleLoaded(&loadError)) {
+        if (!loadError.empty()) {
+            DebugLog("Catalyst native script load failed: " + WideToUtf8(loadError));
+        }
+        return;
+    }
+
+    std::vector<SavedNativeScriptInstance> emptyState;
+    RecreateNativeScriptsFromSavedState(emptyState, true);
+}
+
+void DXRenderer::StopNativeScriptRuntime() {
+    m_scriptTimers.clear();
+    for (RuntimeNativeScriptInstance& instance : m_runtimeNativeScripts) {
+        if (instance.script == nullptr) {
+            continue;
+        }
+
+        if (instance.started) {
+            instance.script->OnStop();
+        }
+        m_scriptModuleHost.DestroyScript(instance.script);
+        instance.script = nullptr;
+    }
+
+    m_runtimeNativeScripts.clear();
+}
+
+void DXRenderer::ApplyNativeScripts(float deltaTime) {
+    for (RuntimeNativeScriptInstance& instance : m_runtimeNativeScripts) {
+        if (instance.script == nullptr) {
+            continue;
+        }
+
+        const GameObject* object = FindGameObjectById(instance.objectId);
+        if (object == nullptr || !object->enabled) {
+            continue;
+        }
+
+        instance.script->OnUpdate(deltaTime);
+    }
+
+    DispatchNativeScriptPhysicsEvents();
+}
+
+bool DXRenderer::HotReloadNativeScripts() {
+    if (!m_scriptModuleHost.HasPendingReload()) {
+        return false;
+    }
+
+    std::vector<SavedNativeScriptInstance> savedInstances;
+    CollectSavedNativeScriptInstances(savedInstances);
+    StopNativeScriptRuntime();
+
+    std::wstring reloadError;
+    if (!m_scriptModuleHost.PerformPendingReload(&reloadError)) {
+        if (!reloadError.empty()) {
+            DebugLog("Catalyst native script hot reload failed: " + WideToUtf8(reloadError));
+        }
+        RecreateNativeScriptsFromSavedState(savedInstances, false);
+        return false;
+    }
+
+    RecreateNativeScriptsFromSavedState(savedInstances, false);
+    return true;
+}
+
+void DXRenderer::CollectSavedNativeScriptInstances(std::vector<SavedNativeScriptInstance>& outSavedInstances) const {
+    outSavedInstances.clear();
+    outSavedInstances.reserve(m_runtimeNativeScripts.size());
+
+    for (const RuntimeNativeScriptInstance& instance : m_runtimeNativeScripts) {
+        if (instance.script == nullptr) {
+            continue;
+        }
+
+        EngineScriptStateBlob blob;
+        Catalyst::ScriptStateWriter writer;
+        writer.context = &blob;
+        writer.writeFloat = &WriteScriptStateFloat;
+        writer.writeBool = &WriteScriptStateBool;
+        writer.writeString = &WriteScriptStateString;
+        instance.script->OnHotReloadSave(writer);
+
+        SavedNativeScriptInstance savedInstance;
+        savedInstance.objectId = instance.objectId;
+        savedInstance.componentId = instance.componentId;
+        savedInstance.className = instance.className;
+        for (const auto& [key, value] : blob.values) {
+            savedInstance.state.push_back({key, value});
+        }
+        outSavedInstances.push_back(std::move(savedInstance));
+    }
+}
+
+void DXRenderer::RecreateNativeScriptsFromSavedState(const std::vector<SavedNativeScriptInstance>& savedInstances, bool callOnStartForFreshInstances) {
+    m_runtimeNativeScripts.clear();
+
+    auto findSavedInstance = [&](uint64_t objectId, uint64_t componentId, const std::string& className) -> const SavedNativeScriptInstance* {
+        for (const SavedNativeScriptInstance& savedInstance : savedInstances) {
+            if (savedInstance.objectId == objectId &&
+                savedInstance.componentId == componentId &&
+                savedInstance.className == className) {
+                return &savedInstance;
+            }
+        }
+        return nullptr;
+    };
+
+    for (GameObject& object : m_gameObjects) {
+        if (!object.enabled) {
+            continue;
+        }
+        for (NativeScriptComponentDesc& component : object.nativeScriptComponents) {
+            component.className = TrimAsciiWhitespace(component.className);
+            if (!component.enabled || component.className.empty()) {
+                continue;
+            }
+
+            Catalyst::NativeScript* script = m_scriptModuleHost.CreateScript(component.className);
+            if (script == nullptr) {
+                DebugLog("Catalyst native script class could not be created: " + component.className);
+                continue;
+            }
+
+            script->__CatalystBind(&m_nativeScriptHostApi, object.id, component.id);
+
+            RuntimeNativeScriptInstance runtimeInstance;
+            runtimeInstance.className = component.className;
+            runtimeInstance.objectId = object.id;
+            runtimeInstance.componentId = component.id;
+            runtimeInstance.script = script;
+
+            const SavedNativeScriptInstance* savedInstance = findSavedInstance(object.id, component.id, component.className);
+            if (savedInstance != nullptr) {
+                EngineScriptStateBlob blob;
+                for (const SavedNativeScriptState& state : savedInstance->state) {
+                    blob.values[state.key] = state.value;
+                }
+
+                Catalyst::ScriptStateReader reader;
+                reader.context = &blob;
+                reader.readFloat = &ReadScriptStateFloat;
+                reader.readBool = &ReadScriptStateBool;
+                reader.readString = &ReadScriptStateString;
+                script->OnHotReloadLoad(reader);
+                runtimeInstance.started = true;
+            } else if (callOnStartForFreshInstances) {
+                script->OnStart();
+                runtimeInstance.started = true;
+            }
+
+            m_runtimeNativeScripts.push_back(runtimeInstance);
+        }
+    }
+}
+
+GameObject* DXRenderer::FindGameObjectById(uint64_t objectId) {
+    for (GameObject& object : m_gameObjects) {
+        if (object.id == objectId) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
+const GameObject* DXRenderer::FindGameObjectById(uint64_t objectId) const {
+    for (const GameObject& object : m_gameObjects) {
+        if (object.id == objectId) {
+            return &object;
+        }
+    }
+    return nullptr;
+}
+
+void DXRenderer::SyncObjectLocalTransform(GameObject& object) {
+    if (!object.inheritParentTransform || object.parentId == 0) {
+        object.localPosition = object.position;
+        object.localRotation = object.rotation;
+        object.localScale = object.scale;
+        return;
+    }
+
+    const GameObject* parent = FindGameObjectById(object.parentId);
+    if (parent == nullptr) {
+        object.parentId = 0;
+        object.inheritParentTransform = false;
+        object.localPosition = object.position;
+        object.localRotation = object.rotation;
+        object.localScale = object.scale;
+        return;
+    }
+
+    const XMMATRIX parentRotation = XMMatrixRotationRollPitchYaw(parent->rotation.x, parent->rotation.y, parent->rotation.z);
+    const XMMATRIX inverseRotation = XMMatrixInverse(nullptr, parentRotation);
+    const XMFLOAT3 worldDelta = SubtractFloat3(object.position, parent->position);
+    XMFLOAT3 unrotatedDelta;
+    XMStoreFloat3(&unrotatedDelta, XMVector3TransformNormal(XMLoadFloat3(&worldDelta), inverseRotation));
+    object.localPosition = {
+        parent->scale.x != 0.0f ? unrotatedDelta.x / parent->scale.x : unrotatedDelta.x,
+        parent->scale.y != 0.0f ? unrotatedDelta.y / parent->scale.y : unrotatedDelta.y,
+        parent->scale.z != 0.0f ? unrotatedDelta.z / parent->scale.z : unrotatedDelta.z
+    };
+    object.localRotation = SubtractFloat3(object.rotation, parent->rotation);
+    object.localScale = {
+        parent->scale.x != 0.0f ? object.scale.x / parent->scale.x : object.scale.x,
+        parent->scale.y != 0.0f ? object.scale.y / parent->scale.y : object.scale.y,
+        parent->scale.z != 0.0f ? object.scale.z / parent->scale.z : object.scale.z
+    };
+}
+
+void DXRenderer::UpdateWorldTransformForObject(GameObject& object, std::vector<uint64_t>& recursionStack) {
+    if (!object.inheritParentTransform || object.parentId == 0) {
+        return;
+    }
+
+    if (std::find(recursionStack.begin(), recursionStack.end(), object.id) != recursionStack.end()) {
+        object.parentId = 0;
+        object.inheritParentTransform = false;
+        return;
+    }
+
+    GameObject* parent = FindGameObjectById(object.parentId);
+    if (parent == nullptr || parent == &object) {
+        object.parentId = 0;
+        object.inheritParentTransform = false;
+        return;
+    }
+
+    recursionStack.push_back(object.id);
+    UpdateWorldTransformForObject(*parent, recursionStack);
+
+    const XMMATRIX parentRotation = XMMatrixRotationRollPitchYaw(parent->rotation.x, parent->rotation.y, parent->rotation.z);
+    const XMFLOAT3 scaledLocal = MultiplyFloat3(object.localPosition, parent->scale);
+    const XMFLOAT3 rotatedLocal = TransformFloat3Normal(scaledLocal, parentRotation);
+    object.position = AddFloat3(parent->position, rotatedLocal);
+    object.rotation = AddFloat3(parent->rotation, object.localRotation);
+    object.scale = MultiplyFloat3(parent->scale, object.localScale);
+    recursionStack.pop_back();
+}
+
+void DXRenderer::UpdateAttachedObjectTransforms() {
+    SyncAllRootObjectLocals();
+    std::vector<uint64_t> recursionStack;
+    for (GameObject& object : m_gameObjects) {
+        UpdateWorldTransformForObject(object, recursionStack);
+    }
+}
+
+void DXRenderer::SyncAllRootObjectLocals() {
+    for (GameObject& object : m_gameObjects) {
+        if (!object.inheritParentTransform || object.parentId == 0) {
+            object.localPosition = object.position;
+            object.localRotation = object.rotation;
+            object.localScale = object.scale;
+        }
+    }
+}
+
+bool DXRenderer::SetObjectParent(uint64_t childObjectId, uint64_t parentObjectId, bool keepWorldTransform) {
+    GameObject* child = FindGameObjectById(childObjectId);
+    GameObject* parent = FindGameObjectById(parentObjectId);
+    if (child == nullptr || parent == nullptr || child == parent) {
+        return false;
+    }
+
+    uint64_t cursorParentId = parent->parentId;
+    while (cursorParentId != 0) {
+        if (cursorParentId == childObjectId) {
+            return false;
+        }
+        const GameObject* nextParent = FindGameObjectById(cursorParentId);
+        cursorParentId = nextParent != nullptr ? nextParent->parentId : 0;
+    }
+
+    child->parentId = parentObjectId;
+    child->inheritParentTransform = true;
+    if (keepWorldTransform) {
+        SyncObjectLocalTransform(*child);
+    } else {
+        child->localPosition = child->position;
+        child->localRotation = child->rotation;
+        child->localScale = child->scale;
+        UpdateAttachedObjectTransforms();
+    }
+    return true;
+}
+
+bool DXRenderer::ClearObjectParent(uint64_t childObjectId, bool keepWorldTransform) {
+    GameObject* child = FindGameObjectById(childObjectId);
+    if (child == nullptr) {
+        return false;
+    }
+
+    if (!keepWorldTransform) {
+        child->position = child->localPosition;
+        child->rotation = child->localRotation;
+        child->scale = child->localScale;
+    }
+
+    child->parentId = 0;
+    child->inheritParentTransform = false;
+    child->localPosition = child->position;
+    child->localRotation = child->rotation;
+    child->localScale = child->scale;
+    return true;
+}
+
+GameObject* DXRenderer::DuplicateGameObject(uint64_t objectId) {
+    const GameObject* source = FindGameObjectById(objectId);
+    if (source == nullptr) {
+        return nullptr;
+    }
+
+    GameObject cloneSeed;
+    GameObject clone = *source;
+    clone.id = cloneSeed.id;
+    clone.name += "_Copy";
+    clone.position.x += 1.0f;
+    clone.parentId = 0;
+    clone.inheritParentTransform = false;
+    clone.localPosition = clone.position;
+    clone.localRotation = clone.rotation;
+    clone.localScale = clone.scale;
+    for (NativeScriptComponentDesc& component : clone.nativeScriptComponents) {
+        NativeScriptComponentDesc idSeed;
+        component.id = idSeed.id;
+    }
+
+    m_gameObjects.push_back(std::move(clone));
+    return &m_gameObjects.back();
+}
+
+GameObject* DXRenderer::InstantiateObjectFromAssetPath(const std::wstring& assetPath, const Catalyst::TransformData& transform) {
+    Asset* asset = FindAssetBySourcePath(assetPath);
+    if (asset == nullptr) {
+        return nullptr;
+    }
+
+    GameObject object;
+    object.name = fs::path(assetPath).stem().string();
+    object.asset = asset;
+    ApplyCatalystTransform(object, transform);
+    object.localPosition = object.position;
+    object.localRotation = object.rotation;
+    object.localScale = object.scale;
+    m_gameObjects.push_back(std::move(object));
+    return &m_gameObjects.back();
+}
+
+void DXRenderer::FlushDestroyedGameObjects() {
+    if (m_pendingDestroyedObjectIds.empty()) {
+        return;
+    }
+
+    std::sort(m_pendingDestroyedObjectIds.begin(), m_pendingDestroyedObjectIds.end());
+    m_pendingDestroyedObjectIds.erase(std::unique(m_pendingDestroyedObjectIds.begin(), m_pendingDestroyedObjectIds.end()),
+                                      m_pendingDestroyedObjectIds.end());
+
+    for (uint64_t objectId : m_pendingDestroyedObjectIds) {
+        m_scriptTimers.erase(std::remove_if(m_scriptTimers.begin(), m_scriptTimers.end(),
+                                            [&](const ScriptTimerEntry& timer) { return timer.objectId == objectId; }),
+                             m_scriptTimers.end());
+        m_runtimeNativeScripts.erase(std::remove_if(m_runtimeNativeScripts.begin(), m_runtimeNativeScripts.end(),
+                                                    [&](RuntimeNativeScriptInstance& instance) {
+                                                        if (instance.objectId != objectId) {
+                                                            return false;
+                                                        }
+                                                        if (instance.script != nullptr) {
+                                                            if (instance.started) {
+                                                                instance.script->OnStop();
+                                                            }
+                                                            m_scriptModuleHost.DestroyScript(instance.script);
+                                                            instance.script = nullptr;
+                                                        }
+                                                        return true;
+                                                    }),
+                                   m_runtimeNativeScripts.end());
+
+        for (GameObject& object : m_gameObjects) {
+            if (object.parentId == objectId) {
+                object.parentId = 0;
+                object.inheritParentTransform = false;
+                object.localPosition = object.position;
+                object.localRotation = object.rotation;
+                object.localScale = object.scale;
+            }
+        }
+
+        m_gameObjects.erase(std::remove_if(m_gameObjects.begin(), m_gameObjects.end(),
+                                           [&](const GameObject& object) { return object.id == objectId; }),
+                            m_gameObjects.end());
+    }
+
+    m_pendingDestroyedObjectIds.clear();
+}
+
+void DXRenderer::UpdateScriptTimers(float deltaTime) {
+    if (deltaTime <= 0.0f || m_scriptTimers.empty()) {
+        return;
+    }
+
+    for (size_t i = 0; i < m_scriptTimers.size();) {
+        ScriptTimerEntry& timer = m_scriptTimers[i];
+        timer.remainingSeconds -= deltaTime;
+        if (timer.remainingSeconds > 0.0f) {
+            ++i;
+            continue;
+        }
+
+        RuntimeNativeScriptInstance* targetInstance = nullptr;
+        for (RuntimeNativeScriptInstance& instance : m_runtimeNativeScripts) {
+            if (instance.objectId == timer.objectId && instance.componentId == timer.componentId) {
+                targetInstance = &instance;
+                break;
+            }
+        }
+
+        if (targetInstance != nullptr && targetInstance->script != nullptr) {
+            targetInstance->script->OnTimer(timer.timerId);
+        }
+
+        if (timer.looping) {
+            timer.remainingSeconds += (std::max)(0.001f, timer.intervalSeconds);
+            ++i;
+        } else {
+            m_scriptTimers.erase(m_scriptTimers.begin() + static_cast<long long>(i));
+        }
+    }
+}
+
+bool DXRenderer::SaveScriptValue(const std::string& slotName, const std::string& key, const std::string& value) {
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (projectFilePath.empty() || slotName.empty() || key.empty()) {
+        return false;
+    }
+
+    std::map<std::string, std::string> entries;
+    const fs::path savePath = fs::path(projectFilePath).parent_path() / L"SaveData" / (Utf8ToWide(slotName) + L".catalystsave");
+    if (fs::exists(savePath)) {
+        std::ifstream inputFile(savePath, std::ios::binary);
+        const std::string content((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
+        JsonValue rootValue;
+        JsonParser parser(content);
+        if (parser.Parse(rootValue) && rootValue.type == JsonValueType::Object) {
+            const JsonValue* entriesValue = FindJsonField(rootValue, "entries");
+            if (entriesValue != nullptr && entriesValue->type == JsonValueType::Array) {
+                for (const JsonValue& entry : entriesValue->arrayValue) {
+                    if (entry.type != JsonValueType::Object) {
+                        continue;
+                    }
+                    entries[GetJsonString(entry, "key")] = GetJsonString(entry, "value");
+                }
+            }
+        }
+    }
+
+    entries[key] = value;
+    std::error_code ec;
+    fs::create_directories(savePath.parent_path(), ec);
+    std::ofstream outputFile(savePath, std::ios::binary | std::ios::trunc);
+    if (!outputFile.is_open()) {
+        return false;
+    }
+
+    outputFile << "{\n  \"entries\": [\n";
+    size_t index = 0;
+    for (const auto& [entryKey, entryValue] : entries) {
+        outputFile << "    {\"key\": \"" << EscapeJsonString(entryKey) << "\", \"value\": \"" << EscapeJsonString(entryValue) << "\"}";
+        outputFile << (++index < entries.size() ? ",\n" : "\n");
+    }
+    outputFile << "  ]\n}\n";
+    return outputFile.good();
+}
+
+bool DXRenderer::LoadScriptValue(const std::string& slotName, const std::string& key, std::string& outValue) const {
+    const std::wstring projectFilePath = ResolveActiveProjectFilePath();
+    if (projectFilePath.empty() || slotName.empty() || key.empty()) {
+        return false;
+    }
+
+    const fs::path savePath = fs::path(projectFilePath).parent_path() / L"SaveData" / (Utf8ToWide(slotName) + L".catalystsave");
+    std::ifstream inputFile(savePath, std::ios::binary);
+    if (!inputFile.is_open()) {
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
+    JsonValue rootValue;
+    JsonParser parser(content);
+    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
+        return false;
+    }
+
+    const JsonValue* entriesValue = FindJsonField(rootValue, "entries");
+    if (entriesValue == nullptr || entriesValue->type != JsonValueType::Array) {
+        return false;
+    }
+
+    for (const JsonValue& entry : entriesValue->arrayValue) {
+        if (entry.type != JsonValueType::Object) {
+            continue;
+        }
+        if (GetJsonString(entry, "key") == key) {
+            outValue = GetJsonString(entry, "value");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+NativeScriptComponentDesc* DXRenderer::FindNativeScriptComponent(GameObject& object, uint64_t componentId) {
+    for (NativeScriptComponentDesc& component : object.nativeScriptComponents) {
+        if (component.id == componentId) {
+            return &component;
+        }
+    }
+    return nullptr;
+}
+
+const NativeScriptComponentDesc* DXRenderer::FindNativeScriptComponent(const GameObject& object, uint64_t componentId) const {
+    for (const NativeScriptComponentDesc& component : object.nativeScriptComponents) {
+        if (component.id == componentId) {
+            return &component;
+        }
+    }
+    return nullptr;
+}
+
+void DXRenderer::ScriptHostLog(void* userData, const char* message) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    DebugLog(message != nullptr ? message : "");
+}
+
+bool DXRenderer::ScriptHostGetKeyDown(void* userData, uint32_t keyCode) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    return (GetAsyncKeyState(static_cast<int>(keyCode)) & 0x8000) != 0;
+}
+
+bool DXRenderer::ScriptHostGetKeyPressed(void* userData, uint32_t keyCode) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    return (GetAsyncKeyState(static_cast<int>(keyCode)) & 0x0001) != 0;
+}
+
+bool DXRenderer::ScriptHostGetActionDown(void* userData, const char* actionName) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    return EvaluateActionState(actionName != nullptr ? actionName : "", false);
+}
+
+bool DXRenderer::ScriptHostGetActionPressed(void* userData, const char* actionName) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    return EvaluateActionState(actionName != nullptr ? actionName : "", true);
+}
+
+float DXRenderer::ScriptHostGetAxis(void* userData, const char* axisName) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    (void)renderer;
+    return EvaluateAxisState(axisName != nullptr ? axisName : "");
+}
+
+float DXRenderer::ScriptHostGetDeltaTime(void* userData) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    return renderer != nullptr ? renderer->m_lastScaledScriptDeltaTime : 0.0f;
+}
+
+float DXRenderer::ScriptHostGetUnscaledDeltaTime(void* userData) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    return renderer != nullptr ? renderer->m_lastUnscaledScriptDeltaTime : 0.0f;
+}
+
+float DXRenderer::ScriptHostGetTimeScale(void* userData) {
+    const DXRenderer* renderer = static_cast<const DXRenderer*>(userData);
+    return renderer != nullptr ? renderer->m_scriptTimeScale : 1.0f;
+}
+
+bool DXRenderer::ScriptHostSetTimeScale(void* userData, float timeScale) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    renderer->m_scriptTimeScale = ClampFloatValue(timeScale, 0.0f, 5.0f);
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetObjectType(void* userData, Catalyst::ObjectId objectId, uint32_t* outObjectType) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outObjectType == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outObjectType = static_cast<uint32_t>(object->type);
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetObjectEnabled(void* userData, Catalyst::ObjectId objectId, bool* outEnabled) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outEnabled == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outEnabled = object->enabled;
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectEnabled(void* userData, Catalyst::ObjectId objectId, bool enabled) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->enabled = enabled;
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetObjectTransform(void* userData, Catalyst::ObjectId objectId, Catalyst::TransformData* outTransform) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outTransform == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outTransform = ToCatalystTransform(*object);
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectTransform(void* userData, Catalyst::ObjectId objectId, const Catalyst::TransformData* transform) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || transform == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    ApplyCatalystTransform(*object, *transform);
+    renderer->SyncObjectLocalTransform(*object);
+    return true;
+}
+
+bool DXRenderer::ScriptHostTranslateObject(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 delta) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->position.x += delta.x;
+    object->position.y += delta.y;
+    object->position.z += delta.z;
+    renderer->SyncObjectLocalTransform(*object);
+    return true;
+}
+
+bool DXRenderer::ScriptHostCopyObjectName(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, object->name.size());
+    std::memcpy(buffer, object->name.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
+}
+
+bool DXRenderer::ScriptHostCopyObjectTag(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, object->tag.size());
+    std::memcpy(buffer, object->tag.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectTag(void* userData, Catalyst::ObjectId objectId, const char* tag) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->tag = TrimAsciiWhitespace(tag != nullptr ? tag : "");
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetObjectLayer(void* userData, Catalyst::ObjectId objectId, uint32_t* outLayer) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outLayer == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outLayer = object->layer;
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectLayer(void* userData, Catalyst::ObjectId objectId, uint32_t layer) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->layer = layer;
+    return true;
+}
+
+Catalyst::ObjectId DXRenderer::ScriptHostFindObjectByName(void* userData, const char* name) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return 0;
+    }
+
+    const std::string targetName = TrimAsciiWhitespace(name != nullptr ? name : "");
+    for (const GameObject& object : renderer->m_gameObjects) {
+        if (object.name == targetName) {
+            return object.id;
+        }
+    }
+    return 0;
+}
+
+Catalyst::ObjectId DXRenderer::ScriptHostFindFirstObjectWithTag(void* userData, const char* tag) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return 0;
+    }
+
+    const std::string targetTag = TrimAsciiWhitespace(tag != nullptr ? tag : "");
+    for (const GameObject& object : renderer->m_gameObjects) {
+        if (object.tag == targetTag) {
+            return object.id;
+        }
+    }
+    return 0;
+}
+
+uint32_t DXRenderer::ScriptHostGetObjectsWithTag(void* userData, const char* tag, Catalyst::ObjectId* outObjects, uint32_t capacity) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outObjects == nullptr || capacity == 0) {
+        return 0;
+    }
+
+    const std::string targetTag = TrimAsciiWhitespace(tag != nullptr ? tag : "");
+    uint32_t count = 0;
+    for (const GameObject& object : renderer->m_gameObjects) {
+        if (object.tag != targetTag) {
+            continue;
+        }
+        if (count >= capacity) {
+            break;
+        }
+        outObjects[count++] = object.id;
+    }
+    return count;
+}
+
+bool DXRenderer::ScriptHostAttachObject(void* userData, Catalyst::ObjectId childObjectId, Catalyst::ObjectId parentObjectId, bool keepWorldTransform) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    return renderer != nullptr && renderer->SetObjectParent(childObjectId, parentObjectId, keepWorldTransform);
+}
+
+bool DXRenderer::ScriptHostDetachObject(void* userData, Catalyst::ObjectId childObjectId, bool keepWorldTransform) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    return renderer != nullptr && renderer->ClearObjectParent(childObjectId, keepWorldTransform);
+}
+
+Catalyst::ObjectId DXRenderer::ScriptHostDuplicateObject(void* userData, Catalyst::ObjectId objectId) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return 0;
+    }
+
+    GameObject* duplicate = renderer->DuplicateGameObject(objectId);
+    return duplicate != nullptr ? duplicate->id : 0;
+}
+
+bool DXRenderer::ScriptHostDestroyObject(void* userData, Catalyst::ObjectId objectId) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || renderer->FindGameObjectById(objectId) == nullptr) {
+        return false;
+    }
+
+    renderer->m_pendingDestroyedObjectIds.push_back(objectId);
+    return true;
+}
+
+Catalyst::ObjectId DXRenderer::ScriptHostInstantiateObjectFromAssetPath(void* userData, const char* assetPath, const Catalyst::TransformData* transform) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || assetPath == nullptr || transform == nullptr) {
+        return 0;
+    }
+
+    const std::wstring projectFilePath = renderer->ResolveActiveProjectFilePath();
+    const std::wstring projectRoot = projectFilePath.empty() ? L"" : fs::path(projectFilePath).parent_path().wstring();
+    const std::wstring resolvedPath = projectRoot.empty()
+        ? NormalizeAssetPath(Utf8ToWide(assetPath))
+        : ResolveSceneReferencePath(projectRoot, assetPath);
+
+    GameObject* object = renderer->InstantiateObjectFromAssetPath(resolvedPath, *transform);
+    return object != nullptr ? object->id : 0;
+}
+
+bool DXRenderer::ScriptHostGetObjectCollider(void* userData, Catalyst::ObjectId objectId, Catalyst::ColliderData* outCollider) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outCollider == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outCollider = ToCatalystCollider(*object);
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectCollider(void* userData, Catalyst::ObjectId objectId, const Catalyst::ColliderData* collider) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || collider == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    ApplyCatalystCollider(*object, *collider);
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetObjectRigidBody(void* userData, Catalyst::ObjectId objectId, Catalyst::RigidbodyData* outRigidBody) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outRigidBody == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outRigidBody = ToCatalystRigidBody(*object);
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectRigidBody(void* userData, Catalyst::ObjectId objectId, const Catalyst::RigidbodyData* rigidBody) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || rigidBody == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    ApplyCatalystRigidBody(*object, *rigidBody);
+    return true;
+}
+
+bool DXRenderer::ScriptHostAddForce(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 force) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr || !object->physics.rigidBody.enabled || object->physics.rigidBody.bodyType != PhysicsBodyType::Dynamic) {
+        return false;
+    }
+
+    const float mass = (std::max)(0.001f, object->physics.rigidBody.mass);
+    object->physics.rigidBody.velocity.x += (force.x / mass) * renderer->m_lastScaledScriptDeltaTime;
+    object->physics.rigidBody.velocity.y += (force.y / mass) * renderer->m_lastScaledScriptDeltaTime;
+    object->physics.rigidBody.velocity.z += (force.z / mass) * renderer->m_lastScaledScriptDeltaTime;
+    return true;
+}
+
+bool DXRenderer::ScriptHostAddImpulse(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 impulse) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr || !object->physics.rigidBody.enabled || object->physics.rigidBody.bodyType != PhysicsBodyType::Dynamic) {
+        return false;
+    }
+
+    const float mass = (std::max)(0.001f, object->physics.rigidBody.mass);
+    object->physics.rigidBody.velocity.x += impulse.x / mass;
+    object->physics.rigidBody.velocity.y += impulse.y / mass;
+    object->physics.rigidBody.velocity.z += impulse.z / mass;
+    return true;
+}
+
+bool DXRenderer::ScriptHostRaycast(void* userData, const Catalyst::Vec3* origin, const Catalyst::Vec3* direction, float maxDistance, Catalyst::RaycastHit* outHit) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || origin == nullptr || direction == nullptr || outHit == nullptr) {
+        return false;
+    }
+
+    const XMFLOAT3 rayOrigin = ToXmfFloat3(*origin);
+    const XMFLOAT3 rayDirection = ToXmfFloat3(*direction);
+    float bestDistance = (std::max)(0.0f, maxDistance);
+    bool didHit = false;
+    Catalyst::RaycastHit bestHit;
+
+    for (const GameObject& object : renderer->m_gameObjects) {
+        if (!object.enabled || !object.physics.collider.enabled) {
+            continue;
+        }
+
+        const ScriptColliderWorldState worldState = BuildScriptColliderWorldState(object);
+        float hitDistance = 0.0f;
+        XMFLOAT3 hitNormal = {0.0f, 1.0f, 0.0f};
+        bool hit = false;
+        if (object.physics.collider.shape == PhysicsColliderShape::Sphere) {
+            hit = RayIntersectsSphere(rayOrigin, rayDirection, worldState.center, worldState.sphereRadius, hitDistance);
+            if (hit) {
+                const XMFLOAT3 point = AddFloat3(rayOrigin, ScaleFloat3(rayDirection, hitDistance));
+                hitNormal = ScaleFloat3(SubtractFloat3(point, worldState.center), 1.0f / (std::max)(0.0001f, worldState.sphereRadius));
+            }
+        } else {
+            hit = RayIntersectsAabb(rayOrigin, rayDirection, worldState.center, worldState.boxExtents, bestDistance, hitDistance, hitNormal);
+        }
+
+        if (!hit || hitDistance > bestDistance) {
+            continue;
+        }
+
+        didHit = true;
+        bestDistance = hitDistance;
+        bestHit.hit = true;
+        bestHit.objectId = object.id;
+        bestHit.distance = hitDistance;
+        bestHit.point = ToCatalystVec3(AddFloat3(rayOrigin, ScaleFloat3(rayDirection, hitDistance)));
+        bestHit.normal = ToCatalystVec3(hitNormal);
+        bestHit.isTrigger = object.physics.collider.isTrigger;
+    }
+
+    *outHit = bestHit;
+    return didHit;
+}
+
+bool DXRenderer::ScriptHostCopyObjectMaterialPath(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr || object->assignedMaterial == nullptr) {
+        return false;
+    }
+
+    const std::string materialPath = WideToUtf8(renderer->GetCachedMaterialPath(object->assignedMaterial));
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, materialPath.size());
+    std::memcpy(buffer, materialPath.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectMaterialPath(void* userData, Catalyst::ObjectId objectId, const char* materialPath) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || materialPath == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    const std::wstring projectFilePath = renderer->ResolveActiveProjectFilePath();
+    const std::wstring projectRoot = projectFilePath.empty() ? L"" : fs::path(projectFilePath).parent_path().wstring();
+    const std::wstring resolvedPath = projectRoot.empty()
+        ? NormalizeAssetPath(Utf8ToWide(materialPath))
+        : ResolveSceneReferencePath(projectRoot, materialPath);
+    object->assignedMaterial = renderer->LoadMaterialAsset(resolvedPath);
+    return object->assignedMaterial != nullptr;
+}
+
+bool DXRenderer::ScriptHostGetObjectColor(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec4* outColor) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outColor == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    *outColor = ToCatalystVec4(object->color);
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetObjectColor(void* userData, Catalyst::ObjectId objectId, const Catalyst::Vec4* color) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || color == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->color = ToXmfFloat4(*color);
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetLightIntensity(void* userData, Catalyst::ObjectId objectId, float* outIntensity) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outIntensity == nullptr) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr || object->type != ObjectType::Light) {
+        return false;
+    }
+
+    *outIntensity = object->lightIntensity;
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetLightIntensity(void* userData, Catalyst::ObjectId objectId, float intensity) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr || object->type != ObjectType::Light) {
+        return false;
+    }
+
+    object->lightIntensity = (std::max)(0.0f, intensity);
+    return true;
+}
+
+bool DXRenderer::ScriptHostGetMainCameraFov(void* userData, float* outFovDegrees) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outFovDegrees == nullptr) {
+        return false;
+    }
+
+    *outFovDegrees = renderer->m_scriptCameraFov;
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetMainCameraFov(void* userData, float fovDegrees) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    renderer->m_scriptCameraFov = ClampFloatValue(fovDegrees, 5.0f, 170.0f);
+    return true;
+}
+
+Catalyst::WidgetId DXRenderer::ScriptHostFindWidgetByText(void* userData, Catalyst::ObjectId ownerObjectId, const char* text) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || text == nullptr) {
+        return -1;
+    }
+
+    const std::string targetText = TrimAsciiWhitespace(text);
+    for (auto& [key, instance] : renderer->m_runtimeWidgetInstances) {
+        if (ownerObjectId != 0 && instance.ownerObjectIndex >= 0) {
+            if (instance.ownerObjectIndex >= static_cast<int>(renderer->m_gameObjects.size())) {
+                continue;
+            }
+            const GameObject& ownerObject = renderer->m_gameObjects[static_cast<size_t>(instance.ownerObjectIndex)];
+            if (ownerObject.id != ownerObjectId) {
+                continue;
+            }
+        }
+
+        for (const RuntimeWidgetNode& node : instance.nodes) {
+            if (node.displayText == targetText) {
+                return node.id;
+            }
+        }
+    }
+
+    return -1;
+}
+
+bool DXRenderer::ScriptHostSetWidgetText(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, const char* text) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || text == nullptr) {
+        return false;
+    }
+
+    for (auto& [key, instance] : renderer->m_runtimeWidgetInstances) {
+        if (ownerObjectId != 0 && instance.ownerObjectIndex >= 0) {
+            if (instance.ownerObjectIndex >= static_cast<int>(renderer->m_gameObjects.size())) {
+                continue;
+            }
+            const GameObject& ownerObject = renderer->m_gameObjects[static_cast<size_t>(instance.ownerObjectIndex)];
+            if (ownerObject.id != ownerObjectId) {
+                continue;
+            }
+        }
+
+        RuntimeWidgetNode* node = renderer->FindRuntimeWidgetNode(instance, widgetId);
+        if (node != nullptr) {
+            node->displayText = text;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DXRenderer::ScriptHostSetWidgetVisible(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, bool visible) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    for (auto& [key, instance] : renderer->m_runtimeWidgetInstances) {
+        if (ownerObjectId != 0 && instance.ownerObjectIndex >= 0) {
+            if (instance.ownerObjectIndex >= static_cast<int>(renderer->m_gameObjects.size())) {
+                continue;
+            }
+            const GameObject& ownerObject = renderer->m_gameObjects[static_cast<size_t>(instance.ownerObjectIndex)];
+            if (ownerObject.id != ownerObjectId) {
+                continue;
+            }
+        }
+
+        RuntimeWidgetNode* node = renderer->FindRuntimeWidgetNode(instance, widgetId);
+        if (node != nullptr) {
+            node->visibleInGame = visible;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DXRenderer::ScriptHostSetWidgetTint(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, const Catalyst::Vec4* color) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || color == nullptr) {
+        return false;
+    }
+
+    const uint32_t packedColor =
+        (static_cast<uint32_t>(ClampFloatValue(color->w, 0.0f, 1.0f) * 255.0f) << 24) |
+        (static_cast<uint32_t>(ClampFloatValue(color->x, 0.0f, 1.0f) * 255.0f) << 16) |
+        (static_cast<uint32_t>(ClampFloatValue(color->y, 0.0f, 1.0f) * 255.0f) << 8) |
+        static_cast<uint32_t>(ClampFloatValue(color->z, 0.0f, 1.0f) * 255.0f);
+
+    for (auto& [key, instance] : renderer->m_runtimeWidgetInstances) {
+        if (ownerObjectId != 0 && instance.ownerObjectIndex >= 0) {
+            if (instance.ownerObjectIndex >= static_cast<int>(renderer->m_gameObjects.size())) {
+                continue;
+            }
+            const GameObject& ownerObject = renderer->m_gameObjects[static_cast<size_t>(instance.ownerObjectIndex)];
+            if (ownerObject.id != ownerObjectId) {
+                continue;
+            }
+        }
+
+        RuntimeWidgetNode* node = renderer->FindRuntimeWidgetNode(instance, widgetId);
+        if (node != nullptr) {
+            node->tintColor = packedColor;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DXRenderer::ScriptHostSetTimer(void* userData, Catalyst::ObjectId objectId, Catalyst::ComponentId componentId, uint64_t timerId, float delaySeconds, bool looping) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || timerId == 0) {
+        return false;
+    }
+
+    renderer->m_scriptTimers.erase(std::remove_if(renderer->m_scriptTimers.begin(), renderer->m_scriptTimers.end(),
+                                                  [&](const ScriptTimerEntry& timer) {
+                                                      return timer.objectId == objectId &&
+                                                             timer.componentId == componentId &&
+                                                             timer.timerId == timerId;
+                                                  }),
+                                   renderer->m_scriptTimers.end());
+    renderer->m_scriptTimers.push_back({objectId, componentId, timerId, (std::max)(0.001f, delaySeconds),
+                                        (std::max)(0.001f, delaySeconds), looping});
+    return true;
+}
+
+bool DXRenderer::ScriptHostCancelTimer(void* userData, Catalyst::ObjectId objectId, Catalyst::ComponentId componentId, uint64_t timerId) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    const size_t oldSize = renderer->m_scriptTimers.size();
+    renderer->m_scriptTimers.erase(std::remove_if(renderer->m_scriptTimers.begin(), renderer->m_scriptTimers.end(),
+                                                  [&](const ScriptTimerEntry& timer) {
+                                                      return timer.objectId == objectId &&
+                                                             timer.componentId == componentId &&
+                                                             timer.timerId == timerId;
+                                                  }),
+                                   renderer->m_scriptTimers.end());
+    return renderer->m_scriptTimers.size() != oldSize;
+}
+
+bool DXRenderer::ScriptHostSaveString(void* userData, const char* slotName, const char* key, const char* value) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    return renderer != nullptr &&
+           renderer->SaveScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", value != nullptr ? value : "");
+}
+
+bool DXRenderer::ScriptHostSaveFloat(void* userData, const char* slotName, const char* key, float value) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    return renderer != nullptr &&
+           renderer->SaveScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", std::to_string(value));
+}
+
+bool DXRenderer::ScriptHostSaveBool(void* userData, const char* slotName, const char* key, bool value) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    return renderer != nullptr &&
+           renderer->SaveScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", value ? "true" : "false");
+}
+
+bool DXRenderer::ScriptHostLoadString(void* userData, const char* slotName, const char* key, char* buffer, uint32_t bufferSize) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    std::string value;
+    if (!renderer->LoadScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", value)) {
+        return false;
+    }
+
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, value.size());
+    std::memcpy(buffer, value.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
+}
+
+bool DXRenderer::ScriptHostLoadFloat(void* userData, const char* slotName, const char* key, float* outValue) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outValue == nullptr) {
+        return false;
+    }
+
+    std::string value;
+    if (!renderer->LoadScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", value)) {
+        return false;
+    }
+
+    try {
+        *outValue = std::stof(value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool DXRenderer::ScriptHostLoadBool(void* userData, const char* slotName, const char* key, bool* outValue) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || outValue == nullptr) {
+        return false;
+    }
+
+    std::string value;
+    if (!renderer->LoadScriptValue(slotName != nullptr ? slotName : "", key != nullptr ? key : "", value)) {
+        return false;
+    }
+
+    value = ToLowerAscii(value);
+    *outValue = value == "true" || value == "1" || value == "yes";
+    return true;
+}
+
+bool DXRenderer::ScriptHostCopyAnimationState(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr || buffer == nullptr || bufferSize == 0) {
+        return false;
+    }
+
+    const GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    const size_t maxChars = static_cast<size_t>(bufferSize - 1);
+    const size_t charsToCopy = (std::min)(maxChars, object->animationState.size());
+    std::memcpy(buffer, object->animationState.data(), charsToCopy);
+    buffer[charsToCopy] = '\0';
+    return true;
+}
+
+bool DXRenderer::ScriptHostSetAnimationState(void* userData, Catalyst::ObjectId objectId, const char* stateName) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->animationState = stateName != nullptr ? stateName : "";
+    return true;
+}
+
+bool DXRenderer::ScriptHostTriggerAnimation(void* userData, Catalyst::ObjectId objectId, const char* triggerName) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer == nullptr) {
+        return false;
+    }
+
+    GameObject* object = renderer->FindGameObjectById(objectId);
+    if (object == nullptr) {
+        return false;
+    }
+
+    object->animationTrigger = triggerName != nullptr ? triggerName : "";
+    if (!object->animationTrigger.empty()) {
+        object->animationState = object->animationTrigger;
+    }
+    return true;
+}
+
+Catalyst::AudioHandle DXRenderer::ScriptHostPlayOneShot2D(void* userData, const char* assetPath, float volume) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer != nullptr) {
+        DebugLog(std::string("Catalyst audio stub invoked for asset: ") + (assetPath != nullptr ? assetPath : "") +
+                 " volume=" + std::to_string(volume));
+    }
+    return 0;
+}
+
+Catalyst::AudioHandle DXRenderer::ScriptHostPlayOneShot3D(void* userData, const char* assetPath, Catalyst::Vec3 position, float volume) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer != nullptr) {
+        DebugLog(std::string("Catalyst 3D audio stub invoked for asset: ") + (assetPath != nullptr ? assetPath : "") +
+                 " volume=" + std::to_string(volume) +
+                 " position=(" + std::to_string(position.x) + "," + std::to_string(position.y) + "," + std::to_string(position.z) + ")");
+    }
+    return 0;
+}
+
+bool DXRenderer::ScriptHostStopAudio(void* userData, Catalyst::AudioHandle handle) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer != nullptr && handle != 0) {
+        DebugLog("Catalyst audio stop is not backed by a runtime mixer yet.");
+    }
+    return false;
+}
+
+bool DXRenderer::ScriptHostSetAudioVolume(void* userData, Catalyst::AudioHandle handle, float volume) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer != nullptr && handle != 0) {
+        DebugLog("Catalyst audio volume is not backed by a runtime mixer yet.");
+    }
+    (void)volume;
+    return false;
+}
+
+bool DXRenderer::ScriptHostSetAudioPitch(void* userData, Catalyst::AudioHandle handle, float pitch) {
+    DXRenderer* renderer = static_cast<DXRenderer*>(userData);
+    if (renderer != nullptr && handle != 0) {
+        DebugLog("Catalyst audio pitch is not backed by a runtime mixer yet.");
+    }
+    (void)pitch;
+    return false;
+}
+
+void DXRenderer::DispatchNativeScriptPhysicsEvents() {
+    for (RuntimeNativeScriptInstance& instance : m_runtimeNativeScripts) {
+        if (instance.script == nullptr) {
+            continue;
+        }
+
+        const GameObject* object = FindGameObjectById(instance.objectId);
+        if (object == nullptr || !object->enabled || !object->physics.collider.enabled) {
+            instance.activeCollisionObjects.clear();
+            instance.activeTriggerObjects.clear();
+            continue;
+        }
+
+        std::vector<uint64_t> currentCollisionObjects;
+        std::vector<uint64_t> currentTriggerObjects;
+
+        for (const GameObject& otherObject : m_gameObjects) {
+            if (otherObject.id == object->id || !otherObject.enabled || !otherObject.physics.collider.enabled) {
+                continue;
+            }
+
+            const ScriptCollisionEventState overlap = BuildScriptOverlapState(*object, otherObject);
+            if (!overlap.intersects) {
+                continue;
+            }
+
+            Catalyst::CollisionEvent event;
+            event.otherObjectId = otherObject.id;
+            event.normal = ToCatalystVec3(overlap.normal);
+            event.penetration = overlap.penetration;
+            event.otherIsTrigger = otherObject.physics.collider.isTrigger;
+
+            if (overlap.isTrigger) {
+                currentTriggerObjects.push_back(otherObject.id);
+                const bool wasActive = std::find(instance.activeTriggerObjects.begin(), instance.activeTriggerObjects.end(), otherObject.id) != instance.activeTriggerObjects.end();
+                if (!wasActive) {
+                    instance.script->OnTriggerEnter(event);
+                }
+                instance.script->OnTriggerStay(event);
+            } else {
+                currentCollisionObjects.push_back(otherObject.id);
+                const bool wasActive = std::find(instance.activeCollisionObjects.begin(), instance.activeCollisionObjects.end(), otherObject.id) != instance.activeCollisionObjects.end();
+                if (!wasActive) {
+                    instance.script->OnCollisionEnter(event);
+                }
+                instance.script->OnCollisionStay(event);
+            }
+        }
+
+        for (uint64_t previousObjectId : instance.activeCollisionObjects) {
+            if (std::find(currentCollisionObjects.begin(), currentCollisionObjects.end(), previousObjectId) == currentCollisionObjects.end()) {
+                Catalyst::CollisionEvent exitEvent;
+                exitEvent.otherObjectId = previousObjectId;
+                instance.script->OnCollisionExit(exitEvent);
+            }
+        }
+
+        for (uint64_t previousObjectId : instance.activeTriggerObjects) {
+            if (std::find(currentTriggerObjects.begin(), currentTriggerObjects.end(), previousObjectId) == currentTriggerObjects.end()) {
+                Catalyst::CollisionEvent exitEvent;
+                exitEvent.otherObjectId = previousObjectId;
+                exitEvent.otherIsTrigger = true;
+                instance.script->OnTriggerExit(exitEvent);
+            }
+        }
+
+        instance.activeCollisionObjects = std::move(currentCollisionObjects);
+        instance.activeTriggerObjects = std::move(currentTriggerObjects);
+    }
+}
+
 void DXRenderer::SetPlayerMouseLookLocked(bool locked, float viewportTop, float viewportWidth, float viewportHeight) {
     if (m_hwnd == nullptr) {
         m_playerMouseLookLocked = false;
@@ -1320,7 +3314,7 @@ void DXRenderer::ApplyBlueprintGameplayNodes(float deltaTime, float viewportTop,
     }
 
     for (GameObject& object : m_gameObjects) {
-        if (!object.blueprintHasTrigger) {
+        if (!object.enabled || !object.blueprintHasTrigger) {
             continue;
         }
 
@@ -1364,14 +3358,14 @@ void DXRenderer::ApplyBlueprintGameplayNodes(float deltaTime, float viewportTop,
 
     GameObject* controlledObject = nullptr;
     for (GameObject& object : m_gameObjects) {
-        if (object.blueprintPlayerControlled) {
+        if (object.enabled && object.blueprintPlayerControlled) {
             controlledObject = &object;
             break;
         }
     }
 
     for (GameObject& object : m_gameObjects) {
-        if (&object == controlledObject || !object.blueprintPlayerControlled) {
+        if (!object.enabled || &object == controlledObject || !object.blueprintPlayerControlled) {
             continue;
         }
 
@@ -1514,76 +3508,75 @@ bool DXRenderer::LoadRuntimeWidgetInstance(const std::wstring& assetPath, Runtim
         return false;
     }
 
-    std::ifstream inputFile(fs::path(assetPath), std::ios::binary);
-    if (!inputFile.is_open()) {
-        return false;
-    }
+    CookedUIBlueprint::Asset cookedAsset;
+    bool loadedCookedAsset = false;
 
-    const std::string content((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
-    JsonValue rootValue;
-    JsonParser parser(content);
-    if (!parser.Parse(rootValue) || rootValue.type != JsonValueType::Object) {
-        return false;
-    }
-
-    if (GetJsonString(rootValue, "type") != "CatalystUIBlueprint") {
-        return false;
-    }
-
-    const JsonValue* graphValue = FindJsonField(rootValue, "graph");
-    if (graphValue == nullptr || graphValue->type != JsonValueType::Object) {
-        return false;
-    }
-
-    const JsonValue* nodesValue = FindJsonField(*graphValue, "nodes");
-    if (nodesValue != nullptr && nodesValue->type == JsonValueType::Array) {
-        outInstance.nodes.reserve(nodesValue->arrayValue.size());
-        for (const JsonValue& nodeValue : nodesValue->arrayValue) {
-            if (nodeValue.type != JsonValueType::Object) {
-                continue;
-            }
-
-            RuntimeWidgetNode node;
-            node.id = GetJsonInt(nodeValue, "id", 0);
-            node.nodeTypeId = GetJsonString(nodeValue, "nodeTypeId");
-            node.displayText = GetJsonString(nodeValue, "displayText");
-            node.canvasX = GetJsonNumber(nodeValue, "canvasX", 0.0f);
-            node.canvasY = GetJsonNumber(nodeValue, "canvasY", 0.0f);
-            node.canvasWidth = GetJsonNumber(nodeValue, "canvasWidth", 120.0f);
-            node.canvasHeight = GetJsonNumber(nodeValue, "canvasHeight", 40.0f);
-            node.tint = GetJsonFloat4(nodeValue, "tint", {1.0f, 1.0f, 1.0f, 1.0f});
-
-            if (node.displayText.empty()) {
-                if (IsUIButtonNodeType(node.nodeTypeId)) {
-                    node.displayText = "Button";
-                } else if (IsUITextBlockNodeType(node.nodeTypeId)) {
-                    node.displayText = "Text";
-                } else if (IsUICanvasNodeType(node.nodeTypeId)) {
-                    node.displayText = "Canvas";
-                } else if (IsUIImageNodeType(node.nodeTypeId)) {
-                    node.displayText = "Image";
+    const std::wstring projectRoot = FindProjectRootFromAssetPath(assetPath);
+    const std::wstring cookedAssetPath = CookedUIBlueprint::GetCookedAssetPath(assetPath);
+    if (!projectRoot.empty()) {
+        const fs::path pakPath = fs::path(projectRoot) / L"data.pak";
+        std::error_code pakEc;
+        if (fs::exists(pakPath, pakEc) && !pakEc) {
+            std::error_code relEc;
+            const fs::path logicalCookedPath = fs::relative(fs::path(cookedAssetPath), fs::path(projectRoot), relEc);
+            if (!relEc && !logicalCookedPath.empty()) {
+                std::vector<uint8_t> cookedBytes;
+                if (CatalystPak::ReadEntry(pakPath.wstring(), logicalCookedPath.generic_wstring(), cookedBytes, nullptr)) {
+                    loadedCookedAsset = CookedUIBlueprint::LoadFromBinaryBuffer(cookedBytes, cookedAsset, nullptr);
                 }
             }
-
-            outInstance.nodes.push_back(node);
         }
     }
 
-    const JsonValue* linksValue = FindJsonField(*graphValue, "links");
-    if (linksValue != nullptr && linksValue->type == JsonValueType::Array) {
-        outInstance.links.reserve(linksValue->arrayValue.size());
-        for (const JsonValue& linkValue : linksValue->arrayValue) {
-            if (linkValue.type != JsonValueType::Object) {
-                continue;
-            }
-
-            RuntimeWidgetLink link;
-            link.fromNodeId = GetJsonInt(linkValue, "fromNodeId", 0);
-            link.toNodeId = GetJsonInt(linkValue, "toNodeId", 0);
-            link.fromPinKind = GetJsonString(linkValue, "fromPinKind", "Exec");
-            link.toPinKind = GetJsonString(linkValue, "toPinKind", "Exec");
-            outInstance.links.push_back(link);
+    if (!loadedCookedAsset) {
+        std::error_code cookedEc;
+        if (fs::exists(cookedAssetPath, cookedEc) && !cookedEc) {
+            loadedCookedAsset = CookedUIBlueprint::LoadFromBinaryFile(cookedAssetPath, cookedAsset, nullptr);
         }
+    }
+
+    if (!loadedCookedAsset) {
+        loadedCookedAsset = CookedUIBlueprint::CompileFromJsonFile(assetPath, cookedAsset, nullptr);
+    }
+
+    if (!loadedCookedAsset) {
+        return false;
+    }
+
+    outInstance.nodes.reserve(cookedAsset.elements.size());
+    for (const CookedUIBlueprint::Element& element : cookedAsset.elements) {
+        RuntimeWidgetNode node;
+        node.id = element.id;
+        node.elementType = element.type;
+        node.displayText = element.displayText;
+        node.canvasX = element.canvasX;
+        node.canvasY = element.canvasY;
+        node.canvasWidth = element.canvasWidth;
+        node.canvasHeight = element.canvasHeight;
+        node.tintColor = element.tintColor;
+        node.visibleInGame = element.visibleInGame;
+        outInstance.nodes.push_back(node);
+    }
+
+    outInstance.instructions.reserve(cookedAsset.instructions.size());
+    for (const CookedUIBlueprint::Instruction& instruction : cookedAsset.instructions) {
+        RuntimeWidgetInstruction runtimeInstruction;
+        runtimeInstruction.opcode = instruction.opcode;
+        runtimeInstruction.targetNodeId = instruction.targetNodeId;
+        runtimeInstruction.color = instruction.color;
+        runtimeInstruction.durationSeconds = instruction.durationSeconds;
+        runtimeInstruction.text = instruction.text;
+        outInstance.instructions.push_back(runtimeInstruction);
+    }
+
+    outInstance.events.reserve(cookedAsset.events.size());
+    for (const CookedUIBlueprint::EventHandler& eventHandler : cookedAsset.events) {
+        RuntimeWidgetEventHandler runtimeEventHandler;
+        runtimeEventHandler.type = eventHandler.type;
+        runtimeEventHandler.sourceNodeId = eventHandler.sourceNodeId;
+        runtimeEventHandler.firstInstructionIndex = eventHandler.firstInstructionIndex;
+        runtimeEventHandler.instructionCount = eventHandler.instructionCount;
+        outInstance.events.push_back(runtimeEventHandler);
     }
 
     return true;
@@ -1607,40 +3600,46 @@ const DXRenderer::RuntimeWidgetNode* DXRenderer::FindRuntimeWidgetNode(const Run
     return nullptr;
 }
 
-void DXRenderer::ExecuteRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId) {
-    std::vector<int> pendingNodes = {nodeId};
-    std::vector<int> visitedNodes;
+void DXRenderer::ExecuteRuntimeWidgetEvent(RuntimeWidgetInstance& instance, const RuntimeWidgetEventHandler& eventHandler) {
+    const uint32_t firstInstructionIndex = (std::min)(eventHandler.firstInstructionIndex, static_cast<uint32_t>(instance.instructions.size()));
+    const uint32_t lastInstructionIndex = (std::min)(firstInstructionIndex + eventHandler.instructionCount,
+                                                     static_cast<uint32_t>(instance.instructions.size()));
 
-    while (!pendingNodes.empty()) {
-        const int currentNodeId = pendingNodes.back();
-        pendingNodes.pop_back();
-        if (std::find(visitedNodes.begin(), visitedNodes.end(), currentNodeId) != visitedNodes.end()) {
-            continue;
+    for (uint32_t instructionIndex = firstInstructionIndex; instructionIndex < lastInstructionIndex; ++instructionIndex) {
+        const RuntimeWidgetInstruction& instruction = instance.instructions[instructionIndex];
+        switch (instruction.opcode) {
+        case CookedUIBlueprint::Opcode::SetTextColor: {
+            RuntimeWidgetNode* targetNode = FindRuntimeWidgetNode(instance, instruction.targetNodeId);
+            if (targetNode != nullptr && targetNode->elementType == CookedUIBlueprint::ElementType::TextBlock) {
+                targetNode->tintColor = instruction.color;
+            }
+            break;
         }
-        visitedNodes.push_back(currentNodeId);
-
-        RuntimeWidgetNode* currentNode = FindRuntimeWidgetNode(instance, currentNodeId);
-        if (currentNode == nullptr) {
-            continue;
-        }
-
-        if (currentNode->nodeTypeId == BlueprintNodes::kSetTextColorNodeId) {
-            for (const RuntimeWidgetLink& link : instance.links) {
-                if (link.toNodeId != currentNodeId || link.fromPinKind != "Data" || link.toPinKind != "Data") {
-                    continue;
-                }
-
-                RuntimeWidgetNode* targetNode = FindRuntimeWidgetNode(instance, link.fromNodeId);
-                if (targetNode != nullptr && IsUITextBlockNodeType(targetNode->nodeTypeId)) {
-                    targetNode->tint = currentNode->tint;
+        case CookedUIBlueprint::Opcode::Print:
+            if (!instruction.text.empty()) {
+                OutputDebugStringA((instruction.text + "\n").c_str());
+            }
+            break;
+        case CookedUIBlueprint::Opcode::OpenLevel:
+            if (!instruction.text.empty()) {
+                OpenSceneMap(fs::path(instruction.text).wstring());
+            }
+            break;
+        case CookedUIBlueprint::Opcode::SwapWidget:
+            if (!instruction.text.empty() &&
+                instance.ownerObjectIndex >= 0 &&
+                instance.ownerObjectIndex < static_cast<int>(m_gameObjects.size())) {
+                GameObject& ownerObject = m_gameObjects[static_cast<size_t>(instance.ownerObjectIndex)];
+                if (instance.ownerWidgetIndex >= 0 &&
+                    instance.ownerWidgetIndex < static_cast<int>(ownerObject.blueprintViewportWidgetAssetPaths.size())) {
+                    ownerObject.blueprintViewportWidgetAssetPaths[static_cast<size_t>(instance.ownerWidgetIndex)] =
+                        fs::path(instruction.text).wstring();
                 }
             }
-        }
-
-        for (const RuntimeWidgetLink& link : instance.links) {
-            if (link.fromNodeId == currentNodeId && link.fromPinKind == "Exec" && link.toPinKind == "Exec") {
-                pendingNodes.push_back(link.toNodeId);
-            }
+            break;
+        case CookedUIBlueprint::Opcode::Delay:
+        default:
+            break;
         }
     }
 }
@@ -1650,11 +3649,16 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
         std::string key;
         std::wstring assetPath;
         std::string ownerName;
+        int ownerObjectIndex = -1;
+        int ownerWidgetIndex = -1;
     };
 
     std::vector<ActiveWidgetRequest> activeWidgets;
     for (size_t objectIndex = 0; objectIndex < m_gameObjects.size(); ++objectIndex) {
         const GameObject& object = m_gameObjects[objectIndex];
+        if (!object.enabled) {
+            continue;
+        }
         for (size_t widgetIndex = 0; widgetIndex < object.blueprintViewportWidgetAssetPaths.size(); ++widgetIndex) {
             const std::wstring& widgetAssetPath = object.blueprintViewportWidgetAssetPaths[widgetIndex];
             if (widgetAssetPath.empty()) {
@@ -1664,7 +3668,9 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
             activeWidgets.push_back({
                 std::to_string(objectIndex) + ":" + std::to_string(widgetIndex) + ":" + WideToUtf8(widgetAssetPath),
                 widgetAssetPath,
-                object.name.empty() ? "Blueprint Actor" : object.name
+                object.name.empty() ? "Blueprint Actor" : object.name,
+                static_cast<int>(objectIndex),
+                static_cast<int>(widgetIndex)
             });
         }
     }
@@ -1699,6 +3705,8 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
         }
         if (foundInstance != m_runtimeWidgetInstances.end()) {
             instance = &foundInstance->second;
+            instance->ownerObjectIndex = request.ownerObjectIndex;
+            instance->ownerWidgetIndex = request.ownerWidgetIndex;
         }
 
         std::error_code existsError;
@@ -1728,14 +3736,28 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
             continue;
         }
 
+        if (!instance->constructExecuted) {
+            for (const RuntimeWidgetEventHandler& eventHandler : instance->events) {
+                if (eventHandler.type == CookedUIBlueprint::EventType::Construct) {
+                    ExecuteRuntimeWidgetEvent(*instance, eventHandler);
+                }
+            }
+            instance->constructExecuted = true;
+        }
+
+        bool hasVisibleNodes = false;
         float widgetContentWidth = 220.0f;
         float widgetContentHeight = 120.0f;
         for (const RuntimeWidgetNode& node : instance->nodes) {
-            if (!IsUIElementNodeType(node.nodeTypeId)) {
+            if (!node.visibleInGame) {
                 continue;
             }
+            hasVisibleNodes = true;
             widgetContentWidth = (std::max)(widgetContentWidth, node.canvasX + node.canvasWidth + 18.0f);
             widgetContentHeight = (std::max)(widgetContentHeight, node.canvasY + node.canvasHeight + 18.0f);
+        }
+        if (!hasVisibleNodes) {
+            continue;
         }
 
         const float widgetW = widgetContentWidth + 24.0f;
@@ -1769,7 +3791,7 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
 
         if (g_InputManager != nullptr && !m_playerMouseLookLocked) {
             for (const RuntimeWidgetNode& node : instance->nodes) {
-                if (!IsUIButtonNodeType(node.nodeTypeId)) {
+                if (!node.visibleInGame || node.elementType != CookedUIBlueprint::ElementType::Button) {
                     continue;
                 }
 
@@ -1783,9 +3805,10 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
                     IsPointInRect(static_cast<float>(g_InputManager->GetMouseX()),
                                   static_cast<float>(g_InputManager->GetMouseY()),
                                   buttonX, buttonY, buttonW, buttonH)) {
-                    for (const RuntimeWidgetLink& link : instance->links) {
-                        if (link.fromNodeId == node.id && link.fromPinKind == "Exec" && link.toPinKind == "Exec") {
-                            ExecuteRuntimeWidgetNode(*instance, link.toNodeId);
+                    for (const RuntimeWidgetEventHandler& eventHandler : instance->events) {
+                        if (eventHandler.type == CookedUIBlueprint::EventType::ButtonPressed &&
+                            eventHandler.sourceNodeId == node.id) {
+                            ExecuteRuntimeWidgetEvent(*instance, eventHandler);
                         }
                     }
                 }
@@ -1794,11 +3817,11 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
 
         for (int drawPass = 0; drawPass < 2; ++drawPass) {
             for (const RuntimeWidgetNode& node : instance->nodes) {
-                const bool isCanvas = IsUICanvasNodeType(node.nodeTypeId);
-                if ((drawPass == 0) != isCanvas) {
+                if (!node.visibleInGame) {
                     continue;
                 }
-                if (!IsUIElementNodeType(node.nodeTypeId)) {
+                const bool isCanvas = node.elementType == CookedUIBlueprint::ElementType::Canvas;
+                if ((drawPass == 0) != isCanvas) {
                     continue;
                 }
 
@@ -1807,28 +3830,24 @@ void DXRenderer::DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportT
                 float elementW = 0.0f;
                 float elementH = 0.0f;
                 GetElementRect(node, elementX, elementY, elementW, elementH);
-                const uint32_t tintColor = Float4ToUIntColor(node.tint);
+                const uint32_t tintColor = node.tintColor;
 
-                if (IsUICanvasNodeType(node.nodeTypeId)) {
+                if (node.elementType == CookedUIBlueprint::ElementType::Canvas) {
                     m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
                     m_uiDrawList.AddText(m_fontManager, node.displayText, elementX + 10.0f, elementY + 20.0f, 0xFFFFFFFF, elementW - 20.0f);
-                } else if (IsUIButtonNodeType(node.nodeTypeId)) {
+                } else if (node.elementType == CookedUIBlueprint::ElementType::Button) {
                     const bool hovered = g_InputManager != nullptr &&
                         IsPointInRect(static_cast<float>(g_InputManager->GetMouseX()),
                                       static_cast<float>(g_InputManager->GetMouseY()),
                                       elementX, elementY, elementW, elementH);
                     m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH,
-                                               hovered ? Float4ToUIntColor({(std::min)(1.0f, node.tint.x + 0.08f),
-                                                                            (std::min)(1.0f, node.tint.y + 0.08f),
-                                                                            (std::min)(1.0f, node.tint.z + 0.08f),
-                                                                            node.tint.w})
-                                                       : tintColor);
+                                               hovered ? BrightenPackedColor(tintColor, 0.08f) : tintColor);
                     m_uiDrawList.AddRectFilled(elementX, elementY, elementW, 3.0f, 0xFFFFFFFF);
                     m_uiDrawList.AddText(m_fontManager, node.displayText,
                                          elementX + 10.0f, elementY + elementH * 0.5f, 0xFFFFFFFF, elementW - 20.0f);
-                } else if (IsUITextBlockNodeType(node.nodeTypeId)) {
+                } else if (node.elementType == CookedUIBlueprint::ElementType::TextBlock) {
                     m_uiDrawList.AddText(m_fontManager, node.displayText, elementX + 4.0f, elementY + 20.0f, tintColor, elementW - 8.0f);
-                } else if (IsUIImageNodeType(node.nodeTypeId)) {
+                } else if (node.elementType == CookedUIBlueprint::ElementType::Image) {
                     m_uiDrawList.AddRectFilled(elementX, elementY, elementW, elementH, tintColor);
                     m_uiDrawList.AddText(m_fontManager, "Image", elementX + 10.0f, elementY + 20.0f, 0xFFFFFFFF, elementW - 20.0f);
                 }
@@ -1918,6 +3937,7 @@ std::wstring DXRenderer::GetCachedTexturePath(const Texture* texture) const {
 }
 
 void DXRenderer::ResetSceneToDefaults() {
+    StopNativeScriptRuntime();
     m_gameObjects.clear();
     m_editorUI.State.selectedObj = -1;
     m_editorUI.State.selectedContentAsset = -1;
@@ -1951,10 +3971,13 @@ void DXRenderer::ResetSceneToDefaults() {
         m_gameObjects.push_back(skybox);
     }
 
+    SyncAllRootObjectLocals();
     RefreshSceneSavedDocument();
 }
 
 void DXRenderer::ClearProjectRuntimeAssets() {
+    StopNativeScriptRuntime();
+    m_scriptModuleHost.ClearProject();
     m_gameObjects.clear();
     m_editorUI.State.selectedObj = -1;
     m_editorUI.State.selectedContentAsset = -1;
@@ -2036,9 +4059,11 @@ bool DXRenderer::LoadStartupSceneForProject(const std::wstring& projectFilePath)
         return false;
     }
 
+    (void)EnsureProjectCodeWorkspaceReady(normalizedProjectFilePath);
     m_editorUI.State.currentProjectFile = normalizedProjectFilePath;
     const std::wstring projectRoot = fs::path(normalizedProjectFilePath).parent_path().wstring();
     m_editorUI.State.currentProjectFolder = projectRoot;
+    m_scriptModuleHost.SetProject(normalizedProjectFilePath);
     const std::wstring scenePath = NormalizeAssetPath(ResolveProjectStartupScenePath(normalizedProjectFilePath));
     m_editorUI.State.currentMapPath = scenePath;
 
@@ -2216,10 +4241,20 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
 
         GameObject sceneObject;
         sceneObject.name = GetJsonString(serializedObject, "name", "GameObject");
+        sceneObject.tag = GetJsonString(serializedObject, "tag");
+        sceneObject.animationState = GetJsonString(serializedObject, "animationState");
+        sceneObject.layer = static_cast<uint32_t>(GetJsonInt(serializedObject, "layer", 0));
+        sceneObject.enabled = GetJsonBool(serializedObject, "enabled", true);
+        sceneObject.id = static_cast<uint64_t>(GetJsonInt(serializedObject, "id", static_cast<int>(sceneObject.id)));
+        sceneObject.parentId = static_cast<uint64_t>(GetJsonInt(serializedObject, "parentId", 0));
+        sceneObject.inheritParentTransform = GetJsonBool(serializedObject, "inheritParentTransform", sceneObject.parentId != 0);
         sceneObject.type = ObjectTypeFromString(GetJsonString(serializedObject, "type", "Mesh"));
         sceneObject.position = GetJsonFloat3(serializedObject, "position", {0.0f, 0.0f, 0.0f});
         sceneObject.rotation = GetJsonFloat3(serializedObject, "rotation", {0.0f, 0.0f, 0.0f});
         sceneObject.scale = GetJsonFloat3(serializedObject, "scale", {1.0f, 1.0f, 1.0f});
+        sceneObject.localPosition = GetJsonFloat3(serializedObject, "localPosition", sceneObject.position);
+        sceneObject.localRotation = GetJsonFloat3(serializedObject, "localRotation", sceneObject.rotation);
+        sceneObject.localScale = GetJsonFloat3(serializedObject, "localScale", sceneObject.scale);
         sceneObject.color = GetJsonFloat4(serializedObject, "color", {1.0f, 1.0f, 1.0f, 1.0f});
         sceneObject.skyHorizonColor = GetJsonFloat4(serializedObject, "skyHorizonColor", {1.0f, 1.0f, 1.0f, 1.0f});
         sceneObject.lightIntensity = GetJsonNumber(serializedObject, "lightIntensity", 1.0f);
@@ -2237,6 +4272,31 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
         const std::wstring assetSourcePath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assetSource"));
         sceneObject.asset = ResolveSceneAsset(assetId, GetJsonString(serializedObject, "assetName"), assetSourcePath);
         sceneObject.blueprintAssetPath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "blueprintAsset"));
+        const JsonValue* componentsValue = FindJsonField(serializedObject, "components");
+        if (componentsValue != nullptr && componentsValue->type == JsonValueType::Array) {
+            for (const JsonValue& componentValue : componentsValue->arrayValue) {
+                if (componentValue.type != JsonValueType::Object) {
+                    continue;
+                }
+
+                if (GetJsonString(componentValue, "type") != "NativeScript") {
+                    continue;
+                }
+
+                NativeScriptComponentDesc component;
+                component.id = static_cast<uint64_t>(GetJsonInt(componentValue, "id", static_cast<int>(component.id)));
+                component.className = TrimAsciiWhitespace(GetJsonString(componentValue, "className"));
+                component.enabled = GetJsonBool(componentValue, "enabled", true);
+                sceneObject.nativeScriptComponents.push_back(component);
+            }
+        }
+
+        const std::string legacyNativeBehavior = TrimAsciiWhitespace(GetJsonString(serializedObject, "nativeBehavior"));
+        if (!legacyNativeBehavior.empty() && sceneObject.nativeScriptComponents.empty()) {
+            NativeScriptComponentDesc legacyComponent;
+            legacyComponent.className = legacyNativeBehavior;
+            sceneObject.nativeScriptComponents.push_back(legacyComponent);
+        }
 
         const std::wstring materialPath = ResolveSceneReferencePath(projectRoot, GetJsonString(serializedObject, "assignedMaterial"));
         if (!materialPath.empty()) {
@@ -2299,6 +4359,7 @@ bool DXRenderer::LoadSceneFromMap(const std::wstring& scenePath, const std::wstr
         return false;
     }
 
+    UpdateAttachedObjectTransforms();
     RefreshSceneSavedDocument();
     return true;
 }
@@ -2612,6 +4673,73 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     m_width = width; 
     m_height = height;
     m_lastFrameTick = GetTickCount64();
+    m_nativeScriptHostApi.apiVersion = Catalyst::kScriptApiVersion;
+    m_nativeScriptHostApi.userData = this;
+    m_nativeScriptHostApi.log = &DXRenderer::ScriptHostLog;
+    m_nativeScriptHostApi.getKeyDown = &DXRenderer::ScriptHostGetKeyDown;
+    m_nativeScriptHostApi.getKeyPressed = &DXRenderer::ScriptHostGetKeyPressed;
+    m_nativeScriptHostApi.getActionDown = &DXRenderer::ScriptHostGetActionDown;
+    m_nativeScriptHostApi.getActionPressed = &DXRenderer::ScriptHostGetActionPressed;
+    m_nativeScriptHostApi.getAxis = &DXRenderer::ScriptHostGetAxis;
+    m_nativeScriptHostApi.getDeltaTime = &DXRenderer::ScriptHostGetDeltaTime;
+    m_nativeScriptHostApi.getUnscaledDeltaTime = &DXRenderer::ScriptHostGetUnscaledDeltaTime;
+    m_nativeScriptHostApi.getTimeScale = &DXRenderer::ScriptHostGetTimeScale;
+    m_nativeScriptHostApi.setTimeScale = &DXRenderer::ScriptHostSetTimeScale;
+    m_nativeScriptHostApi.getObjectType = &DXRenderer::ScriptHostGetObjectType;
+    m_nativeScriptHostApi.getObjectEnabled = &DXRenderer::ScriptHostGetObjectEnabled;
+    m_nativeScriptHostApi.setObjectEnabled = &DXRenderer::ScriptHostSetObjectEnabled;
+    m_nativeScriptHostApi.getObjectTransform = &DXRenderer::ScriptHostGetObjectTransform;
+    m_nativeScriptHostApi.setObjectTransform = &DXRenderer::ScriptHostSetObjectTransform;
+    m_nativeScriptHostApi.translateObject = &DXRenderer::ScriptHostTranslateObject;
+    m_nativeScriptHostApi.copyObjectName = &DXRenderer::ScriptHostCopyObjectName;
+    m_nativeScriptHostApi.copyObjectTag = &DXRenderer::ScriptHostCopyObjectTag;
+    m_nativeScriptHostApi.setObjectTag = &DXRenderer::ScriptHostSetObjectTag;
+    m_nativeScriptHostApi.getObjectLayer = &DXRenderer::ScriptHostGetObjectLayer;
+    m_nativeScriptHostApi.setObjectLayer = &DXRenderer::ScriptHostSetObjectLayer;
+    m_nativeScriptHostApi.findObjectByName = &DXRenderer::ScriptHostFindObjectByName;
+    m_nativeScriptHostApi.findFirstObjectWithTag = &DXRenderer::ScriptHostFindFirstObjectWithTag;
+    m_nativeScriptHostApi.getObjectsWithTag = &DXRenderer::ScriptHostGetObjectsWithTag;
+    m_nativeScriptHostApi.attachObject = &DXRenderer::ScriptHostAttachObject;
+    m_nativeScriptHostApi.detachObject = &DXRenderer::ScriptHostDetachObject;
+    m_nativeScriptHostApi.duplicateObject = &DXRenderer::ScriptHostDuplicateObject;
+    m_nativeScriptHostApi.destroyObject = &DXRenderer::ScriptHostDestroyObject;
+    m_nativeScriptHostApi.instantiateObjectFromAssetPath = &DXRenderer::ScriptHostInstantiateObjectFromAssetPath;
+    m_nativeScriptHostApi.getObjectCollider = &DXRenderer::ScriptHostGetObjectCollider;
+    m_nativeScriptHostApi.setObjectCollider = &DXRenderer::ScriptHostSetObjectCollider;
+    m_nativeScriptHostApi.getObjectRigidBody = &DXRenderer::ScriptHostGetObjectRigidBody;
+    m_nativeScriptHostApi.setObjectRigidBody = &DXRenderer::ScriptHostSetObjectRigidBody;
+    m_nativeScriptHostApi.addForce = &DXRenderer::ScriptHostAddForce;
+    m_nativeScriptHostApi.addImpulse = &DXRenderer::ScriptHostAddImpulse;
+    m_nativeScriptHostApi.raycast = &DXRenderer::ScriptHostRaycast;
+    m_nativeScriptHostApi.copyObjectMaterialPath = &DXRenderer::ScriptHostCopyObjectMaterialPath;
+    m_nativeScriptHostApi.setObjectMaterialPath = &DXRenderer::ScriptHostSetObjectMaterialPath;
+    m_nativeScriptHostApi.getObjectColor = &DXRenderer::ScriptHostGetObjectColor;
+    m_nativeScriptHostApi.setObjectColor = &DXRenderer::ScriptHostSetObjectColor;
+    m_nativeScriptHostApi.getLightIntensity = &DXRenderer::ScriptHostGetLightIntensity;
+    m_nativeScriptHostApi.setLightIntensity = &DXRenderer::ScriptHostSetLightIntensity;
+    m_nativeScriptHostApi.getMainCameraFov = &DXRenderer::ScriptHostGetMainCameraFov;
+    m_nativeScriptHostApi.setMainCameraFov = &DXRenderer::ScriptHostSetMainCameraFov;
+    m_nativeScriptHostApi.findWidgetByText = &DXRenderer::ScriptHostFindWidgetByText;
+    m_nativeScriptHostApi.setWidgetText = &DXRenderer::ScriptHostSetWidgetText;
+    m_nativeScriptHostApi.setWidgetVisible = &DXRenderer::ScriptHostSetWidgetVisible;
+    m_nativeScriptHostApi.setWidgetTint = &DXRenderer::ScriptHostSetWidgetTint;
+    m_nativeScriptHostApi.setTimer = &DXRenderer::ScriptHostSetTimer;
+    m_nativeScriptHostApi.cancelTimer = &DXRenderer::ScriptHostCancelTimer;
+    m_nativeScriptHostApi.saveString = &DXRenderer::ScriptHostSaveString;
+    m_nativeScriptHostApi.saveFloat = &DXRenderer::ScriptHostSaveFloat;
+    m_nativeScriptHostApi.saveBool = &DXRenderer::ScriptHostSaveBool;
+    m_nativeScriptHostApi.loadString = &DXRenderer::ScriptHostLoadString;
+    m_nativeScriptHostApi.loadFloat = &DXRenderer::ScriptHostLoadFloat;
+    m_nativeScriptHostApi.loadBool = &DXRenderer::ScriptHostLoadBool;
+    m_nativeScriptHostApi.copyAnimationState = &DXRenderer::ScriptHostCopyAnimationState;
+    m_nativeScriptHostApi.setAnimationState = &DXRenderer::ScriptHostSetAnimationState;
+    m_nativeScriptHostApi.triggerAnimation = &DXRenderer::ScriptHostTriggerAnimation;
+    m_nativeScriptHostApi.playOneShot2D = &DXRenderer::ScriptHostPlayOneShot2D;
+    m_nativeScriptHostApi.playOneShot3D = &DXRenderer::ScriptHostPlayOneShot3D;
+    m_nativeScriptHostApi.stopAudio = &DXRenderer::ScriptHostStopAudio;
+    m_nativeScriptHostApi.setAudioVolume = &DXRenderer::ScriptHostSetAudioVolume;
+    m_nativeScriptHostApi.setAudioPitch = &DXRenderer::ScriptHostSetAudioPitch;
+    m_scriptModuleHost.SetHostApi(m_nativeScriptHostApi);
 
     ComPtr<IDXGIFactory4> factory; ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
 
@@ -2708,7 +4836,7 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     auto planeAsset = std::make_shared<Asset>(); planeAsset->id = 2; planeAsset->name = "Basic Plane"; planeAsset->mesh = m_primitives["Plane"]; m_assets.push_back(planeAsset);
     auto cylinderAsset = std::make_shared<Asset>(); cylinderAsset->id = 3; cylinderAsset->name = "Basic Cylinder"; cylinderAsset->mesh = m_primitives["Cylinder"]; m_assets.push_back(cylinderAsset);
 
-    m_camera.SetProjection(45.0f, static_cast<float>(width) / static_cast<float>(height), 0.1f, 5000.0f);
+    m_camera.SetProjection(m_scriptCameraFov, static_cast<float>(width) / static_cast<float>(height), 0.1f, 5000.0f);
     ResetSceneToDefaults();
 }
 
@@ -2738,6 +4866,7 @@ void DXRenderer::OnResize(int width, int height) {
 void DXRenderer::Render() {
     m_commandAllocator->Reset(); 
     m_commandList->Reset(m_commandAllocator.Get(), nullptr);
+    PollScriptModuleHost();
 
     float topH = 65.0f;
     float rightW = 350.0f;
@@ -2766,13 +4895,37 @@ void DXRenderer::Render() {
         m_uiContext.ClearModalRegion();
     }
 
+    {
+        AppLaunchRequest req;
+        if (ConsumeAppLaunchRequest(req) && req.play) {
+            m_hasPendingLaunchPlay = true;
+            m_pendingLaunchProjectFile = NormalizeAssetPath(req.projectFilePath);
+            m_pendingLaunchMapPath = NormalizeAssetPath(req.mapPath);
+            m_engineState = EngineState::ProjectLoading;
+            m_projectLoadingOverlayPresented = false;
+            m_editorUI.State.standalonePlay = true;
+            m_editorUI.State.isPlaying = false;
+            QueueProjectStartupSceneLoad(m_pendingLaunchProjectFile);
+        }
+    }
+
+    if (m_engineState == EngineState::Editor && m_editorUI.State.standalonePlay) {
+        topH = 0.0f;
+        rightW = 0.0f;
+        bottomH = 0.0f;
+        viewW = (std::max)(1.0f, w);
+        viewH = (std::max)(1.0f, h);
+    }
+
     
     if (m_engineState == EngineState::Launcher) {
         m_editorUI.DrawLauncher(this, w, h);
     } else if (m_engineState == EngineState::ProjectLoading) {
         m_editorUI.DrawProjectLoading(this, w, h);
     } else {
-        m_editorUI.DrawEditor(this, w, h, topH, rightW, bottomH);
+        if (!m_editorUI.State.standalonePlay) {
+            m_editorUI.DrawEditor(this, w, h, topH, rightW, bottomH);
+        }
         if (!m_editorUI.State.showActorAssetViewer &&
             !m_editorUI.State.showMaterialAssetViewer &&
             !m_editorUI.IsBlueprintEditorOpen() &&
@@ -2785,7 +4938,7 @@ void DXRenderer::Render() {
             sceneMouseInViewport =
                 m_editorUI.State.mx >= 0 && m_editorUI.State.mx <= viewW &&
                 m_editorUI.State.my >= topH && m_editorUI.State.my <= topH + viewH;
-            m_camera.SetProjection(45.0f, viewW / viewH, 0.1f, 5000.0f);
+            m_camera.SetProjection(m_scriptCameraFov, viewW / viewH, 0.1f, 5000.0f);
             if (!playCameraOwnsView) {
                 m_camera.Update(deltaTime, sceneMouseInViewport);
             }
@@ -2811,12 +4964,17 @@ void DXRenderer::Render() {
             m_playModeSnapshot = m_gameObjects;
             RefreshSceneBlueprintRuntime();
             m_runtimeWidgetInstances.clear();
+            StartNativeScriptRuntime();
             m_physicsSystem.Reset();
             m_jumpKeyWasDown = false;
             m_escapeKeyWasDown = false;
             m_playerMouseLookSuppressed = false;
             m_playerControllerPitch = 0.0f;
             m_playerControllerYaw = 0.0f;
+            m_scriptTimeScale = 1.0f;
+            m_scriptCameraFov = 45.0f;
+            m_lastScaledScriptDeltaTime = 0.0f;
+            m_lastUnscaledScriptDeltaTime = 0.0f;
             SetPlayerMouseLookLocked(false);
             for (const GameObject& object : m_gameObjects) {
                 if (object.blueprintPlayerControlled) {
@@ -2830,17 +4988,33 @@ void DXRenderer::Render() {
             }
             m_playModeSnapshot.clear();
             m_runtimeWidgetInstances.clear();
+            StopNativeScriptRuntime();
             m_physicsSystem.Reset();
             m_jumpKeyWasDown = false;
             m_escapeKeyWasDown = false;
             m_playerMouseLookSuppressed = false;
+            m_scriptTimeScale = 1.0f;
+            m_scriptCameraFov = 45.0f;
+            m_lastScaledScriptDeltaTime = 0.0f;
+            m_lastUnscaledScriptDeltaTime = 0.0f;
             SetPlayerMouseLookLocked(false);
         }
 
         m_lastPlayMode = m_editorUI.State.isPlaying;
         if (m_editorUI.State.isPlaying) {
-            ApplyBlueprintGameplayNodes(deltaTime, topH, viewW, viewH, sceneMouseInViewport);
-            m_physicsSystem.Step(m_gameObjects, deltaTime);
+            const float gameplayDeltaTime = deltaTime * m_scriptTimeScale;
+            m_lastUnscaledScriptDeltaTime = deltaTime;
+            m_lastScaledScriptDeltaTime = gameplayDeltaTime;
+            if (m_scriptModuleHost.HasPendingReload()) {
+                (void)HotReloadNativeScripts();
+            }
+            UpdateAttachedObjectTransforms();
+            ApplyBlueprintGameplayNodes(gameplayDeltaTime, topH, viewW, viewH, sceneMouseInViewport);
+            ApplyNativeScripts(gameplayDeltaTime);
+            UpdateScriptTimers(gameplayDeltaTime);
+            m_physicsSystem.Step(m_gameObjects, gameplayDeltaTime);
+            UpdateAttachedObjectTransforms();
+            FlushDestroyedGameObjects();
         }
     } else if (m_lastPlayMode) {
         if (!m_playModeSnapshot.empty()) {
@@ -2850,10 +5024,15 @@ void DXRenderer::Render() {
         m_lastPlayMode = false;
         m_playModeSnapshot.clear();
         m_runtimeWidgetInstances.clear();
+        StopNativeScriptRuntime();
         m_physicsSystem.Reset();
         m_jumpKeyWasDown = false;
         m_escapeKeyWasDown = false;
         m_playerMouseLookSuppressed = false;
+        m_scriptTimeScale = 1.0f;
+        m_scriptCameraFov = 45.0f;
+        m_lastScaledScriptDeltaTime = 0.0f;
+        m_lastUnscaledScriptDeltaTime = 0.0f;
         SetPlayerMouseLookLocked(false);
     }
 
@@ -3133,6 +5312,16 @@ void DXRenderer::Render() {
             ProcessPendingProjectSceneLoad();
             m_engineState = EngineState::Editor;
             m_projectLoadingOverlayPresented = false;
+
+            if (m_hasPendingLaunchPlay) {
+                if (!m_pendingLaunchMapPath.empty()) {
+                    OpenSceneMap(m_pendingLaunchMapPath);
+                }
+                m_editorUI.State.isPlaying = true;
+                m_hasPendingLaunchPlay = false;
+                m_pendingLaunchProjectFile.clear();
+                m_pendingLaunchMapPath.clear();
+            }
         }
     }
 
@@ -3172,12 +5361,23 @@ void DXRenderer::FlushGPU() {
     if (m_fence->GetCompletedValue() < m_fenceValue) { 
         m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent); 
         WaitForSingleObject(m_fenceEvent, INFINITE); 
-    } 
+    }
+}
+void DXRenderer::RenderBlueprintPreview(const std::wstring& assetPath) {
+    // Render a very simple preview – just the asset name in the lower
+    // left corner of the viewport.  This is a placeholder that can be
+    // replaced with a proper node graph renderer later.
+    std::string name = WideToUtf8(assetPath);
+    const float x = 10.0f;
+    const float y = static_cast<float>(m_height) - 30.0f;
+    m_uiContext.AddText(name, x, y, 0xFFFFFFFF, 0.0f);
 }
 
 void DXRenderer::Shutdown() { 
     FlushGPU(); 
     SetPlayerMouseLookLocked(false);
+    StopNativeScriptRuntime();
+    m_scriptModuleHost.Shutdown();
     m_uiRenderer.Shutdown();
     CloseActorAssetViewer();
     CloseMaterialAssetEditor();

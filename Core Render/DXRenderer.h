@@ -26,6 +26,9 @@
 #include "Asset.h"
 #include "../Physics/PhysicsSystem.h"
 #include "EditorUI.h"
+#include "../Blueprint/CookedUIBlueprint.h"
+#include "../Scripting/CatalystAPI.h"
+#include "../Scripting/ScriptModuleHost.h"
 #include "../Launcher.h" 
 
 enum class EngineState {
@@ -48,6 +51,7 @@ public:
     void Initialize(HWND hwnd, int width, int height);
     void OnResize(int width, int height);
     void Render();
+    void RenderBlueprintPreview(const std::wstring& assetPath);
     void Shutdown();
     void SetEngineState(EngineState state) { m_engineState = state; }
     void SetStandaloneActorViewerWindow(bool isStandalone) { m_standaloneActorViewerWindow = isStandalone; }
@@ -72,28 +76,72 @@ public:
     std::vector<ProjectInfo> GetRecentProjectsInfo();
 
 private:
-    struct RuntimeWidgetLink {
-        int fromNodeId = 0;
-        int toNodeId = 0;
-        std::string fromPinKind;
-        std::string toPinKind;
+    struct RuntimeWidgetInstruction {
+        CookedUIBlueprint::Opcode opcode = CookedUIBlueprint::Opcode::SetTextColor;
+        int targetNodeId = 0;
+        uint32_t color = 0xFFFFFFFF;
+        float durationSeconds = 0.0f;
+        std::string text;
+    };
+
+    struct RuntimeWidgetEventHandler {
+        CookedUIBlueprint::EventType type = CookedUIBlueprint::EventType::Construct;
+        int sourceNodeId = 0;
+        uint32_t firstInstructionIndex = 0;
+        uint32_t instructionCount = 0;
     };
 
     struct RuntimeWidgetNode {
         int id = 0;
-        std::string nodeTypeId;
+        CookedUIBlueprint::ElementType elementType = CookedUIBlueprint::ElementType::Canvas;
         std::string displayText;
         float canvasX = 0.0f;
         float canvasY = 0.0f;
         float canvasWidth = 0.0f;
         float canvasHeight = 0.0f;
-        DirectX::XMFLOAT4 tint = {1.0f, 1.0f, 1.0f, 1.0f};
+        uint32_t tintColor = 0xFFFFFFFF;
+        bool visibleInGame = true;
     };
 
     struct RuntimeWidgetInstance {
         std::wstring assetPath;
         std::vector<RuntimeWidgetNode> nodes;
-        std::vector<RuntimeWidgetLink> links;
+        std::vector<RuntimeWidgetInstruction> instructions;
+        std::vector<RuntimeWidgetEventHandler> events;
+        int ownerObjectIndex = -1;
+        int ownerWidgetIndex = -1;
+        bool constructExecuted = false;
+    };
+
+    struct SavedNativeScriptState {
+        std::string key;
+        std::string value;
+    };
+
+    struct SavedNativeScriptInstance {
+        uint64_t objectId = 0;
+        uint64_t componentId = 0;
+        std::string className;
+        std::vector<SavedNativeScriptState> state;
+    };
+
+    struct RuntimeNativeScriptInstance {
+        std::string className;
+        uint64_t objectId = 0;
+        uint64_t componentId = 0;
+        bool started = false;
+        Catalyst::NativeScript* script = nullptr;
+        std::vector<uint64_t> activeCollisionObjects;
+        std::vector<uint64_t> activeTriggerObjects;
+    };
+
+    struct ScriptTimerEntry {
+        uint64_t objectId = 0;
+        uint64_t componentId = 0;
+        uint64_t timerId = 0;
+        float remainingSeconds = 0.0f;
+        float intervalSeconds = 0.0f;
+        bool looping = false;
     };
 
     bool FinalizeActorAssetViewerLoad(const MeshData& meshData, const std::wstring& path);
@@ -122,13 +170,101 @@ private:
     void DrawClosePrompt(float width, float height);
     void RefreshObjectBlueprintRuntime(GameObject& object);
     void RefreshSceneBlueprintRuntime();
+    void PollScriptModuleHost();
+    void StartNativeScriptRuntime();
+    void StopNativeScriptRuntime();
+    void ApplyNativeScripts(float deltaTime);
+    bool HotReloadNativeScripts();
+    void CollectSavedNativeScriptInstances(std::vector<SavedNativeScriptInstance>& outSavedInstances) const;
+    void RecreateNativeScriptsFromSavedState(const std::vector<SavedNativeScriptInstance>& savedInstances, bool callOnStartForFreshInstances);
+    GameObject* FindGameObjectById(uint64_t objectId);
+    const GameObject* FindGameObjectById(uint64_t objectId) const;
+    void FlushDestroyedGameObjects();
+    void UpdateAttachedObjectTransforms();
+    void UpdateWorldTransformForObject(GameObject& object, std::vector<uint64_t>& recursionStack);
+    void SyncObjectLocalTransform(GameObject& object);
+    void SyncAllRootObjectLocals();
+    GameObject* DuplicateGameObject(uint64_t objectId);
+    GameObject* InstantiateObjectFromAssetPath(const std::wstring& assetPath, const Catalyst::TransformData& transform);
+    bool SetObjectParent(uint64_t childObjectId, uint64_t parentObjectId, bool keepWorldTransform);
+    bool ClearObjectParent(uint64_t childObjectId, bool keepWorldTransform);
+    void UpdateScriptTimers(float deltaTime);
+    bool SaveScriptValue(const std::string& slotName, const std::string& key, const std::string& value);
+    bool LoadScriptValue(const std::string& slotName, const std::string& key, std::string& outValue) const;
+    NativeScriptComponentDesc* FindNativeScriptComponent(GameObject& object, uint64_t componentId);
+    const NativeScriptComponentDesc* FindNativeScriptComponent(const GameObject& object, uint64_t componentId) const;
+    static void ScriptHostLog(void* userData, const char* message);
+    static bool ScriptHostGetKeyDown(void* userData, uint32_t keyCode);
+    static bool ScriptHostGetKeyPressed(void* userData, uint32_t keyCode);
+    static bool ScriptHostGetActionDown(void* userData, const char* actionName);
+    static bool ScriptHostGetActionPressed(void* userData, const char* actionName);
+    static float ScriptHostGetAxis(void* userData, const char* axisName);
+    static float ScriptHostGetDeltaTime(void* userData);
+    static float ScriptHostGetUnscaledDeltaTime(void* userData);
+    static float ScriptHostGetTimeScale(void* userData);
+    static bool ScriptHostSetTimeScale(void* userData, float timeScale);
+    static bool ScriptHostGetObjectType(void* userData, Catalyst::ObjectId objectId, uint32_t* outObjectType);
+    static bool ScriptHostGetObjectEnabled(void* userData, Catalyst::ObjectId objectId, bool* outEnabled);
+    static bool ScriptHostSetObjectEnabled(void* userData, Catalyst::ObjectId objectId, bool enabled);
+    static bool ScriptHostGetObjectTransform(void* userData, Catalyst::ObjectId objectId, Catalyst::TransformData* outTransform);
+    static bool ScriptHostSetObjectTransform(void* userData, Catalyst::ObjectId objectId, const Catalyst::TransformData* transform);
+    static bool ScriptHostTranslateObject(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 delta);
+    static bool ScriptHostCopyObjectName(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize);
+    static bool ScriptHostCopyObjectTag(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize);
+    static bool ScriptHostSetObjectTag(void* userData, Catalyst::ObjectId objectId, const char* tag);
+    static bool ScriptHostGetObjectLayer(void* userData, Catalyst::ObjectId objectId, uint32_t* outLayer);
+    static bool ScriptHostSetObjectLayer(void* userData, Catalyst::ObjectId objectId, uint32_t layer);
+    static Catalyst::ObjectId ScriptHostFindObjectByName(void* userData, const char* name);
+    static Catalyst::ObjectId ScriptHostFindFirstObjectWithTag(void* userData, const char* tag);
+    static uint32_t ScriptHostGetObjectsWithTag(void* userData, const char* tag, Catalyst::ObjectId* outObjects, uint32_t capacity);
+    static bool ScriptHostAttachObject(void* userData, Catalyst::ObjectId childObjectId, Catalyst::ObjectId parentObjectId, bool keepWorldTransform);
+    static bool ScriptHostDetachObject(void* userData, Catalyst::ObjectId childObjectId, bool keepWorldTransform);
+    static Catalyst::ObjectId ScriptHostDuplicateObject(void* userData, Catalyst::ObjectId objectId);
+    static bool ScriptHostDestroyObject(void* userData, Catalyst::ObjectId objectId);
+    static Catalyst::ObjectId ScriptHostInstantiateObjectFromAssetPath(void* userData, const char* assetPath, const Catalyst::TransformData* transform);
+    static bool ScriptHostGetObjectCollider(void* userData, Catalyst::ObjectId objectId, Catalyst::ColliderData* outCollider);
+    static bool ScriptHostSetObjectCollider(void* userData, Catalyst::ObjectId objectId, const Catalyst::ColliderData* collider);
+    static bool ScriptHostGetObjectRigidBody(void* userData, Catalyst::ObjectId objectId, Catalyst::RigidbodyData* outRigidBody);
+    static bool ScriptHostSetObjectRigidBody(void* userData, Catalyst::ObjectId objectId, const Catalyst::RigidbodyData* rigidBody);
+    static bool ScriptHostAddForce(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 force);
+    static bool ScriptHostAddImpulse(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec3 impulse);
+    static bool ScriptHostRaycast(void* userData, const Catalyst::Vec3* origin, const Catalyst::Vec3* direction, float maxDistance, Catalyst::RaycastHit* outHit);
+    static bool ScriptHostCopyObjectMaterialPath(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize);
+    static bool ScriptHostSetObjectMaterialPath(void* userData, Catalyst::ObjectId objectId, const char* materialPath);
+    static bool ScriptHostGetObjectColor(void* userData, Catalyst::ObjectId objectId, Catalyst::Vec4* outColor);
+    static bool ScriptHostSetObjectColor(void* userData, Catalyst::ObjectId objectId, const Catalyst::Vec4* color);
+    static bool ScriptHostGetLightIntensity(void* userData, Catalyst::ObjectId objectId, float* outIntensity);
+    static bool ScriptHostSetLightIntensity(void* userData, Catalyst::ObjectId objectId, float intensity);
+    static bool ScriptHostGetMainCameraFov(void* userData, float* outFovDegrees);
+    static bool ScriptHostSetMainCameraFov(void* userData, float fovDegrees);
+    static Catalyst::WidgetId ScriptHostFindWidgetByText(void* userData, Catalyst::ObjectId ownerObjectId, const char* text);
+    static bool ScriptHostSetWidgetText(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, const char* text);
+    static bool ScriptHostSetWidgetVisible(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, bool visible);
+    static bool ScriptHostSetWidgetTint(void* userData, Catalyst::ObjectId ownerObjectId, Catalyst::WidgetId widgetId, const Catalyst::Vec4* color);
+    static bool ScriptHostSetTimer(void* userData, Catalyst::ObjectId objectId, Catalyst::ComponentId componentId, uint64_t timerId, float delaySeconds, bool looping);
+    static bool ScriptHostCancelTimer(void* userData, Catalyst::ObjectId objectId, Catalyst::ComponentId componentId, uint64_t timerId);
+    static bool ScriptHostSaveString(void* userData, const char* slotName, const char* key, const char* value);
+    static bool ScriptHostSaveFloat(void* userData, const char* slotName, const char* key, float value);
+    static bool ScriptHostSaveBool(void* userData, const char* slotName, const char* key, bool value);
+    static bool ScriptHostLoadString(void* userData, const char* slotName, const char* key, char* buffer, uint32_t bufferSize);
+    static bool ScriptHostLoadFloat(void* userData, const char* slotName, const char* key, float* outValue);
+    static bool ScriptHostLoadBool(void* userData, const char* slotName, const char* key, bool* outValue);
+    static bool ScriptHostCopyAnimationState(void* userData, Catalyst::ObjectId objectId, char* buffer, uint32_t bufferSize);
+    static bool ScriptHostSetAnimationState(void* userData, Catalyst::ObjectId objectId, const char* stateName);
+    static bool ScriptHostTriggerAnimation(void* userData, Catalyst::ObjectId objectId, const char* triggerName);
+    static Catalyst::AudioHandle ScriptHostPlayOneShot2D(void* userData, const char* assetPath, float volume);
+    static Catalyst::AudioHandle ScriptHostPlayOneShot3D(void* userData, const char* assetPath, Catalyst::Vec3 position, float volume);
+    static bool ScriptHostStopAudio(void* userData, Catalyst::AudioHandle handle);
+    static bool ScriptHostSetAudioVolume(void* userData, Catalyst::AudioHandle handle, float volume);
+    static bool ScriptHostSetAudioPitch(void* userData, Catalyst::AudioHandle handle, float pitch);
+    void DispatchNativeScriptPhysicsEvents();
     void SetPlayerMouseLookLocked(bool locked, float viewportTop = 0.0f, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
     void ApplyBlueprintGameplayNodes(float deltaTime, float viewportTop, float viewportWidth, float viewportHeight, bool mouseInViewport);
     void DrawRuntimeBlueprintWidgets(float viewportLeft, float viewportTop, float viewportWidth, float viewportHeight);
     bool LoadRuntimeWidgetInstance(const std::wstring& assetPath, RuntimeWidgetInstance& outInstance);
     RuntimeWidgetNode* FindRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId);
     const RuntimeWidgetNode* FindRuntimeWidgetNode(const RuntimeWidgetInstance& instance, int nodeId) const;
-    void ExecuteRuntimeWidgetNode(RuntimeWidgetInstance& instance, int nodeId);
+    void ExecuteRuntimeWidgetEvent(RuntimeWidgetInstance& instance, const RuntimeWidgetEventHandler& eventHandler);
     Asset* FindAssetById(int assetId) const;
     Asset* FindAssetBySourcePath(const std::wstring& sourcePath) const;
     Material* FindMaterialByPath(const std::wstring& materialPath) const;
@@ -227,13 +363,26 @@ private:
     bool m_playerMouseLookSuppressed = false;
     float m_playerControllerYaw = 0.0f;
     float m_playerControllerPitch = 0.0f;
+    float m_lastScaledScriptDeltaTime = 0.0f;
+    float m_lastUnscaledScriptDeltaTime = 0.0f;
+    float m_scriptTimeScale = 1.0f;
+    float m_scriptCameraFov = 45.0f;
+    Catalyst::ScriptHostApi m_nativeScriptHostApi{};
+    ScriptModuleHost m_scriptModuleHost;
     std::map<std::string, RuntimeWidgetInstance> m_runtimeWidgetInstances;
+    std::vector<RuntimeNativeScriptInstance> m_runtimeNativeScripts;
+    std::vector<ScriptTimerEntry> m_scriptTimers;
+    std::vector<uint64_t> m_pendingDestroyedObjectIds;
     bool m_showClosePrompt = false;
     bool m_closePromptCloseAllWindows = false;
     std::wstring m_closePromptSummary;
     std::wstring m_closePromptError;
     WindowCommand m_pendingWindowCommand = WindowCommand::None;
     
+    bool m_hasPendingLaunchPlay = false;
+    std::wstring m_pendingLaunchProjectFile;
+    std::wstring m_pendingLaunchMapPath;
+
     uint32_t m_frameHeapOffset = 0;
     PhysicsSystem m_physicsSystem;
 };
