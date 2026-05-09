@@ -55,7 +55,7 @@ XMFLOAT3 Abs(const XMFLOAT3& value) {
 float Dot(const XMFLOAT3& a, const XMFLOAT3& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
-
+ 
 float LengthSquared(const XMFLOAT3& value) {
     return Dot(value, value);
 }

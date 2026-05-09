@@ -179,6 +179,9 @@
     <ClInclude Include="Core Render\DXRenderer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Core Render\ShaderCompiler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="EngineApp.h">
       <Filter>Header Files</Filter>
     </ClInclude>

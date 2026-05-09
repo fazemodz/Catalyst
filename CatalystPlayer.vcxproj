@@ -140,6 +140,7 @@
     <ClInclude Include="Blueprint\Nodes\BlueprintNodeLibrary.h" />
     <ClInclude Include="Core Render\BindlessManager.h" />
     <ClInclude Include="Core Render\DXRenderer.h" />
+    <ClInclude Include="Core Render\ShaderCompiler.h" />
     <ClInclude Include="Core Render\Passes\AssetPreviewPass.h" />
     <ClInclude Include="Core Render\Passes\PostProcessPass.h" />
     <ClInclude Include="Core Render\Passes\QuantaMeshPass.h" />

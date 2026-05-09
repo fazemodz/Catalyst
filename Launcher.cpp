@@ -436,7 +436,7 @@ std::wstring BrowseForProjectFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Project (*.CatalystProj)\0*.CatalystProj\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -479,7 +479,7 @@ std::wstring BrowseForAssetFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Supported Assets (*.obj;*.png;*.jpg;*.jpeg)\0*.obj;*.png;*.jpg;*.jpeg\0Wavefront OBJ (*.obj)\0*.obj\0Textures (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -498,7 +498,7 @@ std::wstring BrowseForActorAssetFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Actor Assets (*.catalystactor)\0*.catalystactor\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -517,7 +517,7 @@ std::wstring BrowseForTextureFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Textures (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -536,7 +536,7 @@ std::wstring BrowseForMaterialFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Materials (*.catalystmat)\0*.catalystmat\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -555,7 +555,7 @@ std::wstring BrowseForBlueprintFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Blueprints (*.catalystblueprint)\0*.catalystblueprint\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -574,7 +574,7 @@ std::wstring BrowseForUIBlueprintFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst UI Blueprints (*.catalystuiblueprint)\0*.catalystuiblueprint\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);
@@ -593,7 +593,7 @@ std::wstring BrowseForMapFile(HWND ownerWindow) {
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
     ofn.lpstrFilter = L"Catalyst Maps (*.catalystmap)\0*.catalystmap\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetOpenFileNameW(&ofn) == TRUE) {
         return std::wstring(ofn.lpstrFile);

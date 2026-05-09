@@ -1,4 +1,5 @@
 #pragma once
+#include <DirectXMath.h>
 #include <filesystem>
 #include <string>
 
@@ -9,6 +10,8 @@ public:
     std::string name;
     std::wstring sourcePath;
     std::filesystem::file_time_type lastWriteTime{};
+
+    DirectX::XMFLOAT4 baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
 
     std::string albedoPath;
     std::string normalPath;

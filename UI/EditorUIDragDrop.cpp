@@ -162,6 +162,9 @@ void EditorUI::ProcessDragAndDrop(DXRenderer* renderer, float w, float h, float 
                             gameObjects[hitObjectIndex].assignedMaterial = material;
                             State.selectedObj = hitObjectIndex;
                             State.selectedContentAsset = State.draggedAssetIndex;
+                            SetEditorStatus("Assigned " + material->name + " to " + gameObjects[hitObjectIndex].name, 0xFF89D185);
+                        } else {
+                            SetEditorStatus("Material load failed", 0xFFE07A7A);
                         }
                     }
 

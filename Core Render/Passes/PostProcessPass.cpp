@@ -4,6 +4,7 @@
 #include <cmath>
 #include <DirectXMath.h>
 #include "Common.h"
+#include "../ShaderCompiler.h"
 
 using namespace DirectX;
 
@@ -32,9 +33,9 @@ void PostProcessPass::CreateOffscreenRenderTarget(ID3D12Device* device, int widt
 
 void PostProcessPass::CreatePipeline(ID3D12Device* device) {
     ComPtr<ID3DBlob> vs, ps, err;
-    HRESULT hr = D3DCompileFromFile(L"Shaders/postprocess.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err); 
+    HRESULT hr = CatalystRender::CompileShaderFromFile(L"Shaders/postprocess.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "PP VS Failed");
-    hr = D3DCompileFromFile(L"Shaders/postprocess.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG, 0, &ps, &err); 
+    hr = CatalystRender::CompileShaderFromFile(L"Shaders/postprocess.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", D3DCOMPILE_DEBUG, 0, &ps, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "PP PS Failed");
 
     D3D12_ROOT_PARAMETER rp[2] = {};

@@ -567,9 +567,21 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
         insY += 45.0f;
 
         if (material) {
-            drawList.AddText(fontMgr, "Material Textures", insX, insY + 15.0f, 0xFF9E9E9E);
+            drawList.AddText(fontMgr, "Base Color", insX, insY + 15.0f, 0xFF9E9E9E);
+            insY += 30.0f;
+            DrawMaterialBaseColor(renderer, material, materialPath, insX, sW, insY);
+
+            drawList.AddText(fontMgr, "Texture Slots", insX, insY + 15.0f, 0xFF9E9E9E);
             insY += 30.0f;
             DrawMaterialTextureSlots(renderer, hwnd, material, materialPath, insX, sW, insY);
+
+            if (selectedBlueprintObject && selectedBlueprintObject->name.find("Sky") == std::string::npos) {
+                if (uiCtx.Button("Apply To Selected Object", insX, insY, sW, 28.0f, 0xFF204042, 0xFF2A575A, 0xFF183235)) {
+                    selectedBlueprintObject->assignedMaterial = material;
+                    SetEditorStatus("Assigned " + material->name + " to " + selectedBlueprintObject->name, 0xFF89D185);
+                }
+                insY += 38.0f;
+            }
 
             drawList.AddText(fontMgr, "Drag this material onto a mesh in the viewport to hot-swap it.", insX, insY + 15.0f, 0xFF5E5E5E, sW);
         } else {
@@ -616,10 +628,26 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
             uiCtx.DragFloat("Col B", obj.color.z, 0.01f, insX, insY, sW, 24.0f); insY += 28.0f;
 
             std::string materialName = obj.assignedMaterial ? obj.assignedMaterial->name : "None";
-            drawList.AddText(fontMgr, "Assigned Material: " + materialName, insX, insY + 15.0f, 0xFF848484, sW);
-            insY += 26.0f;
-            if (obj.assignedMaterial && uiCtx.Button("Clear Material Override", insX, insY, sW, 24.0f, 0xFF383838, 0xFF505050, 0xFF5E5E5E)) {
+            drawList.AddText(fontMgr, "Assigned Material", insX, insY + 15.0f, 0xFF9E9E9E, sW);
+            insY += 22.0f;
+            drawList.AddRectFilled(insX, insY, sW, 30.0f, 0xFF171717);
+            drawList.AddText(fontMgr, FitName(materialName, 32), insX + 8.0f, insY + 21.0f, obj.assignedMaterial ? 0xFFE8E8E8 : 0xFF848484, sW - 16.0f);
+            insY += 40.0f;
+            if (uiCtx.Button("Assign .catalystmat", insX, insY, sW * 0.64f, 26.0f, 0xFF242424, 0xFF3B3B3B, 0xFF1A1A1A)) {
+                const std::wstring chosenMaterial = BrowseForMaterialFile(hwnd);
+                if (!chosenMaterial.empty()) {
+                    Material* material = renderer->LoadMaterialAsset(chosenMaterial);
+                    if (material) {
+                        obj.assignedMaterial = material;
+                        SetEditorStatus("Assigned " + material->name + " to " + obj.name, 0xFF89D185);
+                    } else {
+                        SetEditorStatus("Material load failed", 0xFFE07A7A);
+                    }
+                }
+            }
+            if (uiCtx.Button("Clear", insX + sW * 0.68f, insY, sW * 0.32f, 26.0f, 0xFF303030, 0xFF454545, 0xFF242424)) {
                 obj.assignedMaterial = nullptr;
+                SetEditorStatus("Cleared material on " + obj.name, 0xFFB7BEC8);
             }
             insY += 36.0f;
 

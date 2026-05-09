@@ -1454,7 +1454,10 @@ std::string DXRenderer::BuildMaterialDocument(const Material& material) const {
     std::ostringstream file;
     file << "{\n";
     file << "  \"type\": \"CatalystMaterial\",\n";
-    file << "  \"version\": 1,\n";
+    file << "  \"version\": 2,\n";
+    file << "  \"baseColor\": ";
+    WriteJsonFloat4(file, material.baseColor);
+    file << ",\n";
     file << "  \"textures\": {\n";
     file << "    \"albedo\": \"" << EscapeJsonString(NormalizeLinkedMaterialPath(material.albedoPath)) << "\",\n";
     file << "    \"normal\": \"" << EscapeJsonString(NormalizeLinkedMaterialPath(material.normalPath)) << "\",\n";
@@ -1506,14 +1509,32 @@ bool DXRenderer::SaveMaterialAssetEditor() {
         return false;
     }
 
-    if (!m_materialEditorMaterial->SaveToFile(m_editorUI.State.materialEditorPath)) {
+    return SaveMaterialAsset(*m_materialEditorMaterial, m_editorUI.State.materialEditorPath);
+}
+
+bool DXRenderer::SaveMaterialAsset(Material& material, const std::wstring& path) {
+    const std::wstring normalizedPath = NormalizeAssetPath(path);
+    if (normalizedPath.empty()) {
         return false;
     }
 
-    SyncMaterialTextures(*m_materialEditorMaterial);
+    material.sourcePath = normalizedPath;
+    material.name = fs::path(normalizedPath).stem().string();
+    if (!material.SaveToFile(normalizedPath)) {
+        return false;
+    }
+
+    SyncMaterialTextures(material);
     std::error_code ec;
-    m_materialEditorMaterial->lastWriteTime = fs::last_write_time(m_editorUI.State.materialEditorPath, ec);
-    RefreshMaterialEditorSavedDocument();
+    material.lastWriteTime = fs::last_write_time(normalizedPath, ec);
+    if (ec) {
+        material.lastWriteTime = {};
+    }
+
+    if (m_materialEditorMaterial == &material &&
+        NormalizeAssetPath(m_editorUI.State.materialEditorPath) == normalizedPath) {
+        RefreshMaterialEditorSavedDocument();
+    }
     return true;
 }
 

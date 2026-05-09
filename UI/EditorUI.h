@@ -199,6 +199,8 @@ private:
                                   bool& autoRotate, bool& isDragging,
                                   int& lastMouseX, int& lastMouseY,
                                   float& outViewportW, float& outViewportH);
+    void DrawMaterialBaseColor(DXRenderer* renderer, Material* material, const std::wstring& materialPath,
+                               float x, float width, float& y);
     void DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Material* material, const std::wstring& materialPath,
                                   float x, float width, float& y);
 };

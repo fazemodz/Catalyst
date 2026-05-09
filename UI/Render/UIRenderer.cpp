@@ -4,6 +4,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <windows.h>
+#include "../../Core Render/ShaderCompiler.h"
 
 using namespace DirectX;
 
@@ -59,13 +60,13 @@ void UIRenderer::CreatePipelineState(ID3D12Device* device, DXGI_FORMAT rtvFormat
     device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature));
 
     ComPtr<ID3DBlob> vs, ps;
-    HRESULT hrVS = D3DCompileFromFile(L"Shaders/UI.hlsl", nullptr, nullptr, "VSMain", "vs_5_1", 0, 0, &vs, &errBlob);
+    HRESULT hrVS = CatalystRender::CompileShaderFromFile(L"Shaders/UI.hlsl", nullptr, nullptr, "VSMain", "vs_5_1", 0, 0, &vs, &errBlob);
     if (FAILED(hrVS)) {
         if (errBlob) OutputDebugStringA((char*)errBlob->GetBufferPointer());
         throw std::runtime_error("Failed to compile UI.hlsl Vertex Shader.");
     }
 
-    HRESULT hrPS = D3DCompileFromFile(L"Shaders/UI.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", 0, 0, &ps, &errBlob);
+    HRESULT hrPS = CatalystRender::CompileShaderFromFile(L"Shaders/UI.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", 0, 0, &ps, &errBlob);
     if (FAILED(hrPS)) {
         if (errBlob) OutputDebugStringA((char*)errBlob->GetBufferPointer());
         throw std::runtime_error("Failed to compile UI.hlsl Pixel Shader.");

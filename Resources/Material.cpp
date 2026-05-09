@@ -95,6 +95,34 @@ std::string ExtractJsonString(const std::string& content, const char* key) {
     return UnescapeJsonString(match[1].str());
 }
 
+bool ExtractJsonFloat4(const std::string& content, const char* key, DirectX::XMFLOAT4& outValue) {
+    const std::string numberPattern = R"((-?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?))";
+    const std::regex pattern(
+        std::string("\"") + key + "\"\\s*:\\s*\\[\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*\\]",
+        std::regex_constants::icase);
+
+    std::smatch match;
+    if (!std::regex_search(content, match, pattern) || match.size() < 5) {
+        return false;
+    }
+
+    try {
+        outValue = {
+            std::stof(match[1].str()),
+            std::stof(match[2].str()),
+            std::stof(match[3].str()),
+            std::stof(match[4].str())
+        };
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 std::string NormalizeLinkedPath(const std::string& path) {
     std::string normalized = path;
     std::replace(normalized.begin(), normalized.end(), '\\', '/');
@@ -105,6 +133,7 @@ std::string NormalizeLinkedPath(const std::string& path) {
 bool Material::LoadFromFile(const std::wstring& filepath) {
     sourcePath = filepath;
     name = fs::path(filepath).stem().string();
+    baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
     albedoPath.clear();
     normalPath.clear();
     roughnessPath.clear();
@@ -118,6 +147,11 @@ bool Material::LoadFromFile(const std::wstring& filepath) {
     }
 
     std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    DirectX::XMFLOAT4 parsedBaseColor;
+    if (ExtractJsonFloat4(content, "baseColor", parsedBaseColor) ||
+        ExtractJsonFloat4(content, "color", parsedBaseColor)) {
+        baseColor = parsedBaseColor;
+    }
     albedoPath = NormalizeLinkedPath(ExtractJsonString(content, "albedo"));
     normalPath = NormalizeLinkedPath(ExtractJsonString(content, "normal"));
     roughnessPath = NormalizeLinkedPath(ExtractJsonString(content, "roughness"));
@@ -142,7 +176,8 @@ bool Material::SaveToFile(const std::wstring& filepath) const {
 
     file << "{\n";
     file << "  \"type\": \"CatalystMaterial\",\n";
-    file << "  \"version\": 1,\n";
+    file << "  \"version\": 2,\n";
+    file << "  \"baseColor\": [" << baseColor.x << ", " << baseColor.y << ", " << baseColor.z << ", " << baseColor.w << "],\n";
     file << "  \"textures\": {\n";
     file << "    \"albedo\": \"" << EscapeJsonString(NormalizeLinkedPath(albedoPath)) << "\",\n";
     file << "    \"normal\": \"" << EscapeJsonString(NormalizeLinkedPath(normalPath)) << "\",\n";

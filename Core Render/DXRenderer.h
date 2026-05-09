@@ -158,6 +158,7 @@ private:
     bool HasUnsavedSceneChanges() const;
     bool HasUnsavedMaterialEditorChanges() const;
     bool SaveMaterialAssetEditor();
+    bool SaveMaterialAsset(Material& material, const std::wstring& path);
     bool SavePendingOpenDocuments();
     std::wstring ResolveActiveProjectFilePath() const;
     std::wstring ResolveActiveProjectDisplayName() const;

@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include "Common.h"
 #include "Mesh.h" 
+#include "../ShaderCompiler.h"
 
 void ShadowPass::Initialize(ID3D12Device* device) {
     CreateResources(device);
@@ -24,7 +25,7 @@ void ShadowPass::CreateResources(ID3D12Device* device) {
 
 void ShadowPass::CreatePipeline(ID3D12Device* device) {
     ComPtr<ID3DBlob> vs, err;
-    HRESULT hr = D3DCompileFromFile(L"Shaders/shadow.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err); 
+    HRESULT hr = CatalystRender::CompileShaderFromFile(L"Shaders/shadow.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", D3DCOMPILE_DEBUG, 0, &vs, &err);
     if(FAILED(hr)) { std::string msg = err ? (char*)err->GetBufferPointer() : "Shadow VS Failed"; ThrowIfFailed(hr, msg); }
 
     D3D12_INPUT_ELEMENT_DESC layout[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };

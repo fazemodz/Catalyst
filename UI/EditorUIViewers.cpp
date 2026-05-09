@@ -8,6 +8,21 @@
 #include <fstream>
 using namespace EditorUIInternal;
 
+namespace {
+uint32_t PackMaterialColor(const DirectX::XMFLOAT4& color) {
+    const auto ToByte = [](float value) {
+        const float clamped = std::clamp(value, 0.0f, 1.0f);
+        return static_cast<uint32_t>(std::lround(clamped * 255.0f));
+    };
+
+    const uint32_t a = ToByte(color.w);
+    const uint32_t r = ToByte(color.x);
+    const uint32_t g = ToByte(color.y);
+    const uint32_t b = ToByte(color.z);
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+}
+
 void EditorUI::UpdatePreviewInteraction(float viewportTop, float viewportWidth, float viewportHeight,
                                         float& yaw, float& pitch, float& distance,
                                         bool& autoRotate, bool& isDragging,
@@ -54,6 +69,43 @@ void EditorUI::UpdatePreviewInteraction(float viewportTop, float viewportWidth, 
     }
 }
 
+void EditorUI::DrawMaterialBaseColor(DXRenderer* renderer, Material* material, const std::wstring& materialPath,
+                                     float x, float width, float& y) {
+    if (!material) {
+        return;
+    }
+
+    auto& drawList = renderer->m_uiDrawList;
+    auto& uiCtx = renderer->m_uiContext;
+    auto& fontMgr = renderer->m_fontManager;
+
+    drawList.AddText(fontMgr, "Base Color", x, y + 15.0f, 0xFFAAAAAA);
+    drawList.AddRectFilled(x + width - 54.0f, y, 54.0f, 24.0f, 0xFF111111);
+    drawList.AddRectFilled(x + width - 50.0f, y + 4.0f, 46.0f, 16.0f, PackMaterialColor(material->baseColor));
+    y += 32.0f;
+
+    bool changed = false;
+    changed |= uiCtx.DragFloat("Base R", material->baseColor.x, 0.005f, x, y, width, 24.0f); y += 28.0f;
+    changed |= uiCtx.DragFloat("Base G", material->baseColor.y, 0.005f, x, y, width, 24.0f); y += 28.0f;
+    changed |= uiCtx.DragFloat("Base B", material->baseColor.z, 0.005f, x, y, width, 24.0f); y += 28.0f;
+    changed |= uiCtx.DragFloat("Alpha", material->baseColor.w, 0.005f, x, y, width, 24.0f); y += 32.0f;
+
+    material->baseColor.x = std::clamp(material->baseColor.x, 0.0f, 1.0f);
+    material->baseColor.y = std::clamp(material->baseColor.y, 0.0f, 1.0f);
+    material->baseColor.z = std::clamp(material->baseColor.z, 0.0f, 1.0f);
+    material->baseColor.w = std::clamp(material->baseColor.w, 0.0f, 1.0f);
+
+    if (uiCtx.Button("Reset Base Color", x, y, width, 24.0f, 0xFF303030, 0xFF4A4A4A, 0xFF242424)) {
+        material->baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+        changed = true;
+    }
+    y += 34.0f;
+
+    if (changed) {
+        renderer->SaveMaterialAsset(*material, materialPath);
+    }
+}
+
 void EditorUI::DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Material* material, const std::wstring& materialPath,
                                         float x, float width, float& y) {
     if (!material) {
@@ -66,7 +118,7 @@ void EditorUI::DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Materia
 
     std::wstring projectRoot = !State.currentProjectFolder.empty() ? State.currentProjectFolder : FindProjectRootFromAssetPath(materialPath);
     auto SaveMaterialState = [&]() {
-        renderer->SaveMaterialAssetEditor();
+        renderer->SaveMaterialAsset(*material, materialPath);
     };
 
     auto AssignTextureSlot = [&](const char* label, std::string& linkedPath) {
@@ -89,7 +141,7 @@ void EditorUI::DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Materia
         y += 34.0f;
     };
 
-    AssignTextureSlot("Albedo", material->albedoPath);
+    AssignTextureSlot("Base Color", material->albedoPath);
     AssignTextureSlot("Normal", material->normalPath);
     AssignTextureSlot("Roughness", material->roughnessPath);
 }
@@ -393,7 +445,7 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
         drawList.AddText(fontMgr, "Material Preview", 20.0f, editorTop + 34.0f, 0xFFFFFFFF);
         drawList.AddText(fontMgr, "Material: " + FitName(State.materialEditorTitle, 28), 20.0f, editorTop + 58.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, std::string("Preview Mesh: ") + previewLabel, 20.0f, editorTop + 82.0f, 0xFFD8D8D8);
-        drawList.AddText(fontMgr, "Albedo: " + DescribeLinkedAsset(material->albedoPath), 20.0f, editorTop + 106.0f, 0xFFD8D8D8);
+        drawList.AddText(fontMgr, "Base Texture: " + DescribeLinkedAsset(material->albedoPath), 20.0f, editorTop + 106.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, "Normal: " + DescribeLinkedAsset(material->normalPath), 20.0f, editorTop + 130.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, "Mouse orbit  Wheel zoom", 20.0f, editorTop + 154.0f, 0xFFB0B0B0);
     }
@@ -413,6 +465,10 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
         drawList.AddText(fontMgr, title, panelX + 12.0f, cursorY + 16.0f, 0xFFFFFFFF);
         cursorY += 32.0f;
     };
+
+    DrawSection("Base Color");
+    DrawMaterialBaseColor(renderer, material, State.materialEditorPath, rowX, rowW, cursorY);
+    cursorY += 10.0f;
 
     DrawSection("Texture Slots");
     DrawMaterialTextureSlots(renderer, hwnd, material, State.materialEditorPath, rowX, rowW, cursorY);

@@ -3,6 +3,7 @@
 #include <map>
 #include "Common.h"
 #include "Material.h"
+#include "../ShaderCompiler.h"
 
 namespace {
 Texture* ResolveObjectTexture(const GameObject& obj, Texture* GameObject::* overrideSlot,
@@ -83,7 +84,7 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     // ==========================================
     // 1. COMPUTE PIPELINE
     // ==========================================
-    ComPtr<ID3DBlob> cs; hr = D3DCompileFromFile(L"Shaders/QuantaCull.hlsl", nullptr, nullptr, "CSMain", "cs_5_1", standardFlags, 0, &cs, &err);
+    ComPtr<ID3DBlob> cs; hr = CatalystRender::CompileShaderFromFile(L"Shaders/QuantaCull.hlsl", nullptr, nullptr, "CSMain", "cs_5_1", standardFlags, 0, &cs, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "Compute Cull Failed");
 
     D3D12_ROOT_PARAMETER crp[4] = {};
@@ -106,9 +107,9 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     // 2. QUANTA PIPELINE
     // ==========================================
     ComPtr<ID3DBlob> vs, ps;
-    hr = D3DCompileFromFile(L"Shaders/QuantaMesh.hlsl", nullptr, nullptr, "VSMain", "vs_5_1", standardFlags, 0, &vs, &err); 
+    hr = CatalystRender::CompileShaderFromFile(L"Shaders/QuantaMesh.hlsl", nullptr, nullptr, "VSMain", "vs_5_1", standardFlags, 0, &vs, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "Quanta VS Failed");
-    hr = D3DCompileFromFile(L"Shaders/QuantaMesh.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", standardFlags, 0, &ps, &err); 
+    hr = CatalystRender::CompileShaderFromFile(L"Shaders/QuantaMesh.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", standardFlags, 0, &ps, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "Quanta PS Failed");
 
     D3D12_INPUT_ELEMENT_DESC layout[] = { 
@@ -207,10 +208,20 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
             Texture* normalTexture = ResolveObjectTexture(*obj, &GameObject::overrideNormal, &Asset::normalMap, &Material::normalTexture, texNormal);
             Texture* metallicTexture = ResolveObjectTexture(*obj, &GameObject::overrideMetallic, &Asset::metallicMap, nullptr, texBlack);
             Texture* roughnessTexture = ResolveObjectTexture(*obj, &GameObject::overrideRoughness, &Asset::roughnessMap, &Material::roughnessTexture, texWhite);
+            XMFLOAT4 resolvedColor = obj->color;
+            if (obj->assignedMaterial) {
+                const XMFLOAT4& materialColor = obj->assignedMaterial->baseColor;
+                resolvedColor = {
+                    resolvedColor.x * materialColor.x,
+                    resolvedColor.y * materialColor.y,
+                    resolvedColor.z * materialColor.z,
+                    resolvedColor.w * materialColor.w
+                };
+            }
 
             XMMATRIX scale = XMMatrixScaling(obj->scale.x, obj->scale.y, obj->scale.z); XMMATRIX rot = XMMatrixRotationRollPitchYaw(obj->rotation.x, obj->rotation.y, obj->rotation.z); XMMATRIX trans = XMMatrixTranslation(obj->position.x, obj->position.y, obj->position.z);
             m_mappedObjectData[index].worldMatrix = XMMatrixTranspose(scale * rot * trans);
-            m_mappedObjectData[index].colorOverride = obj->color;
+            m_mappedObjectData[index].colorOverride = resolvedColor;
             m_mappedObjectData[index].center = obj->position;
             m_mappedObjectData[index].radius = max(obj->scale.x, max(obj->scale.y, obj->scale.z));
             m_mappedObjectData[index].indexCount = mesh->GetIndexCount();
