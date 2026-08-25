@@ -1,0 +1,170 @@
+#include "Material.h"
+#include "Json.h"
+#include <algorithm>
+#include <fstream>
+#include <regex>
+#include <sstream>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+std::string UnescapeJsonString(const std::string& value) {
+    std::string unescaped;
+    unescaped.reserve(value.size());
+
+    bool escaped = false;
+    for (char ch : value) {
+        if (!escaped) {
+            if (ch == '\\') {
+                escaped = true;
+            } else {
+                unescaped += ch;
+            }
+            continue;
+        }
+
+        switch (ch) {
+        case '\\':
+            unescaped += '\\';
+            break;
+        case '"':
+            unescaped += '"';
+            break;
+        case 'n':
+            unescaped += '\n';
+            break;
+        case 'r':
+            unescaped += '\r';
+            break;
+        case 't':
+            unescaped += '\t';
+            break;
+        default:
+            unescaped += ch;
+            break;
+        }
+
+        escaped = false;
+    }
+
+    if (escaped) {
+        unescaped += '\\';
+    }
+
+    return unescaped;
+}
+
+std::string ExtractJsonString(const std::string& content, const char* key) {
+    const std::regex pattern(
+        std::string("\"") + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"",
+        std::regex_constants::icase);
+    std::smatch match;
+    if (!std::regex_search(content, match, pattern) || match.size() < 2) {
+        return "";
+    }
+
+    return UnescapeJsonString(match[1].str());
+}
+
+bool ExtractJsonFloat4(const std::string& content, const char* key, DirectX::XMFLOAT4& outValue) {
+    const std::string numberPattern = R"((-?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?))";
+    const std::regex pattern(
+        std::string("\"") + key + "\"\\s*:\\s*\\[\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*,\\s*" +
+        numberPattern + "\\s*\\]",
+        std::regex_constants::icase);
+
+    std::smatch match;
+    if (!std::regex_search(content, match, pattern) || match.size() < 5) {
+        return false;
+    }
+
+    try {
+        outValue = {
+            std::stof(match[1].str()),
+            std::stof(match[2].str()),
+            std::stof(match[3].str()),
+            std::stof(match[4].str())
+        };
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::string NormalizeLinkedPath(const std::string& path) {
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    return normalized;
+}
+}
+
+bool Material::LoadFromFile(const std::wstring& filepath) {
+    sourcePath = filepath;
+    name = fs::path(filepath).stem().string();
+    baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    albedoPath.clear();
+    normalPath.clear();
+    roughnessPath.clear();
+    albedoTexture = nullptr;
+    normalTexture = nullptr;
+    roughnessTexture = nullptr;
+
+    std::ifstream file(fs::path(filepath), std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    DirectX::XMFLOAT4 parsedBaseColor;
+    if (ExtractJsonFloat4(content, "baseColor", parsedBaseColor) ||
+        ExtractJsonFloat4(content, "color", parsedBaseColor)) {
+        baseColor = parsedBaseColor;
+    }
+    albedoPath = NormalizeLinkedPath(ExtractJsonString(content, "albedo"));
+    normalPath = NormalizeLinkedPath(ExtractJsonString(content, "normal"));
+    roughnessPath = NormalizeLinkedPath(ExtractJsonString(content, "roughness"));
+
+    std::error_code ec;
+    lastWriteTime = fs::last_write_time(filepath, ec);
+    if (ec) {
+        lastWriteTime = {};
+    }
+
+    return true;
+}
+
+bool Material::SaveToFile(const std::wstring& filepath) const {
+    std::error_code ec;
+    fs::create_directories(fs::path(filepath).parent_path(), ec);
+
+    std::ofstream file(fs::path(filepath), std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    file << "{\n";
+    file << "  \"type\": \"CatalystMaterial\",\n";
+    file << "  \"version\": 2,\n";
+    file << "  \"baseColor\": [" << baseColor.x << ", " << baseColor.y << ", " << baseColor.z << ", " << baseColor.w << "],\n";
+    file << "  \"textures\": {\n";
+    file << "    \"albedo\": \"" << Json::Escape(NormalizeLinkedPath(albedoPath)) << "\",\n";
+    file << "    \"normal\": \"" << Json::Escape(NormalizeLinkedPath(normalPath)) << "\",\n";
+    file << "    \"roughness\": \"" << Json::Escape(NormalizeLinkedPath(roughnessPath)) << "\"\n";
+    file << "  }\n";
+    file << "}\n";
+    return true;
+}
+
+std::wstring Material::ResolveLinkedTexturePath(const std::string& linkedPath) const {
+    if (linkedPath.empty() || sourcePath.empty()) {
+        return L"";
+    }
+
+    fs::path linked(linkedPath);
+    fs::path resolved = linked.is_absolute() ? linked : fs::path(sourcePath).parent_path() / linked;
+    return resolved.lexically_normal().wstring();
+}
