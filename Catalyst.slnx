@@ -3,5 +3,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="Catalyst.vcxproj" Id="20e0c554-4f92-4eb3-845c-5085241a3b84" />
+  <Project Path="Catalyst Launcher/Catalyst Launcher.csproj" />
+  <Project Path="Catalyst/Catalyst.vcxproj" Id="20e0c554-4f92-4eb3-845c-5085241a3b84" />
 </Solution>

@@ -1,0 +1,27 @@
+<!-- Catalyst Editor Theme — copy to the same directory as Catalyst.exe to override defaults -->
+<StyleSheet>
+  <!-- Launcher screen colors -->
+  <Style class="theme"
+    background="#0C0C0F"
+    sidebar="#0F0F13"
+    panel="#141418"
+    card="#1C1C24"
+    accent="#D77800"
+    textHigh="#ECECEC"
+    textMid="#8888A0"
+    textDim="#505068"
+    border="#232330"
+  />
+
+  <!-- Editor panel colors -->
+  <Style class="editor"
+    menubar="#141414"
+    toolbar="#232323"
+    outliner="#262626"
+    details="#1E1E1E"
+    bottom="#1A1A1A"
+    divider="#3A3A3A"
+    accent="#D77800"
+    textPanel="#B0B0B0"
+  />
+</StyleSheet>

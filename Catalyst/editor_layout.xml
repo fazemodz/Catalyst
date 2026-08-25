@@ -1,0 +1,10 @@
+<!-- Catalyst Editor Layout — copy to same directory as Catalyst.exe to override defaults -->
+<!-- height/width values drive panel dimensions; flex="1" panels fill remaining space -->
+<EditorLayout>
+  <Panel id="menubar"   height="25"  background="#141414" />
+  <Panel id="toolbar"   height="40"  background="#232323" />
+  <Panel id="outliner"  width="350"  background="#262626" />
+  <Panel id="viewport"  flex="1" />
+  <Panel id="details"   width="350"  background="#1E1E1E" />
+  <Panel id="bottombar" height="250" background="#1A1A1A" />
+</EditorLayout>
