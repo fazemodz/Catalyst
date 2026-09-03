@@ -253,9 +253,19 @@ MigrationBackup/
 ## JetBrains IDEs
 .idea/*
 
+## CMake (engine build)
+/build/
+/out/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+cmake-build-*/
+
 ## Catalyst Engine — user-specific runtime files
 recent_projects.txt
-
+/SdkPackageManager
 ## Claude Code
 .claude/
 /Catalyst Launcher

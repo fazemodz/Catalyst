@@ -3810,6 +3810,9 @@ Asset* DXRenderer::ResolveSceneAsset(int assetId, const std::string& assetName, 
                     Mesh* mesh = new Mesh(m_device.Get(), m_commandList.Get(),
                                           meshData.Vertices.data(), meshData.Vertices.size(),
                                           meshData.Indices.data(), meshData.Indices.size());
+                    mesh->UploadClusters(m_device.Get(), m_commandList.Get(), meshData.Clusters,
+                                         meshData.ClusterLevelCount, meshData.BaseTriangleCount);
+                    DeferUploadBufferRelease(mesh);
                     m_primitives[meshKey] = mesh;
 
                     auto sceneAsset = std::make_shared<Asset>();
@@ -4252,6 +4255,10 @@ void DXRenderer::CloseActorAssetViewer() {
 
 void DXRenderer::CloseMaterialAssetEditor() {
     m_editorUI.State.showMaterialAssetViewer = false;
+    // The slot picker belongs to whichever material was open; leaving it up
+    // would have it editing an asset the user has already walked away from.
+    m_editorUI.State.showTexturePicker = false;
+    m_editorUI.State.texturePickerMaterialPath.clear();
     m_editorUI.State.materialEditorPath.clear();
     m_editorUI.State.materialEditorTitle.clear();
     m_editorUI.State.materialEditorIsDragging = false;
@@ -4565,6 +4572,22 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     CreateDefaultTextures(); 
 
     m_shadowPass.Initialize(m_device.Get());
+
+    // The depth texture is typeless, so the SRV needs an explicit format. It has
+    // to sit in the bindless heap because that is the only descriptor heap bound
+    // when the scene is shaded.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrv = {};
+        shadowSrv.Format = DXGI_FORMAT_R32_FLOAT;
+        shadowSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        shadowSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        shadowSrv.Texture2D.MipLevels = 1;
+        m_shadowMapBindlessIndex = m_bindlessManager.AddTexture(m_device.Get(), m_shadowPass.GetShadowMap(), &shadowSrv);
+        if (m_shadowMapBindlessIndex < 0) {
+            OutputLog::Add("No bindless slot was free for the shadow map; the scene will render unshadowed.",
+                           OutputLog::Level::Error);
+        }
+    }
     m_postProcessPass.Initialize(m_device.Get(), m_width, m_height);
     m_quantaMeshPass.Initialize(m_device.Get());
     m_skyboxPass.Initialize(m_device.Get());
@@ -4612,6 +4635,10 @@ void DXRenderer::Initialize(HWND hwnd, int width, int height) {
     ID3D12CommandList* uploadLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(1, uploadLists);
     FlushGPU();
+
+    for (const char* primitiveName : {"Cube", "Sphere", "Plane", "Cylinder"}) {
+        m_primitives[primitiveName]->ReleaseUploadBuffers();
+    }
     
     if (m_skyboxPass.GetHDRResource()) {
         const int skyboxIndex = m_bindlessManager.AddTexture(m_device.Get(), m_skyboxPass.GetHDRResource());
@@ -4732,6 +4759,7 @@ void DXRenderer::Render() {
     // submission that used it, instead of stalling on every frame.
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     WaitForFrame(m_frameIndex);
+    RetireCompletedUploadBuffers();
     m_commandAllocators[m_frameIndex]->Reset();
     m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr);
     PollScriptModuleHost();
@@ -5035,11 +5063,14 @@ void DXRenderer::Render() {
 
             const XMMATRIX lightSpace = XMMatrixIdentity();
             const XMFLOAT3 lightDir = {-0.45f, -0.82f, 0.35f};
+            // Previews show a single asset on its own, so the scene's shadow map
+            // has nothing to say about them.
+            m_quantaMeshPass.m_shadowUvTexelSize = 0.0f;
             m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), previewObjects, previewCamera,
                                     static_cast<int>(previewWidth), static_cast<int>(previewHeight),
                                     lightSpace, lightDir, 1.45f, nullptr, m_bindlessManager.GetHeap(),
                                     m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                                    m_frameIndex, false, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
+                                    m_frameIndex, false, m_texWhite, m_texNormal, m_texBlack, m_primitives["Sphere"]);
 
             if (m_editorUI.State.materialEditorShowSky) {
                 m_skyboxPass.Render(
@@ -5105,11 +5136,14 @@ void DXRenderer::Render() {
 
             const XMMATRIX lightSpace = XMMatrixIdentity();
             const XMFLOAT3 lightDir = {-0.45f, -0.82f, 0.35f};
+            // Previews show a single asset on its own, so the scene's shadow map
+            // has nothing to say about them.
+            m_quantaMeshPass.m_shadowUvTexelSize = 0.0f;
             m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), previewObjects, previewCamera,
                                     static_cast<int>(previewWidth), static_cast<int>(previewHeight),
                                     lightSpace, lightDir, 1.45f, nullptr, m_bindlessManager.GetHeap(),
                                     m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                                    m_frameIndex, false, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
+                                    m_frameIndex, false, m_texWhite, m_texNormal, m_texBlack, m_primitives["Sphere"]);
 
             if (m_editorUI.State.actorViewerShowSky) {
                 m_skyboxPass.Render(
@@ -5153,6 +5187,11 @@ void DXRenderer::Render() {
                 }
             }
 
+            // Depth-only pass for the sun, before anything binds the scene's
+            // render targets. It leaves the shadow map in PIXEL_SHADER_RESOURCE
+            // ready for the shading pass below.
+            RenderShadowMap();
+
             m_postProcessPass.TransitionToRTV(m_commandList.Get());
             m_postProcessPass.Clear(m_commandList.Get());
 
@@ -5169,14 +5208,15 @@ void DXRenderer::Render() {
             ID3D12DescriptorHeap* sceneHeaps[] = { m_bindlessManager.GetHeap() };
             m_commandList->SetDescriptorHeaps(1, sceneHeaps);
 
-            XMMATRIX lightSpace = XMMatrixIdentity();
+            // Exactly the transform the depth map was rendered with.
+            XMMATRIX lightSpace = m_shadowLightMatrix;
             // Angled rather than straight down: a top-down sun puts every shadow
             // directly beneath the object that casts it, where nothing can see it.
-            XMFLOAT3 lightDir = {-0.72f, -0.62f, 0.31f};
+            XMFLOAT3 lightDir = m_sunDirection;
             m_quantaMeshPass.Render(m_commandList.Get(), m_device.Get(), m_gameObjects, m_camera, static_cast<int>(viewW), static_cast<int>(viewH),
                                     lightSpace, lightDir, 1.0f, nullptr, m_bindlessManager.GetHeap(),
                                     m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                                    m_frameIndex, raytracingActive, m_texWhite, m_texNormal, m_texBlack, nullptr, m_primitives["Sphere"]);
+                                    m_frameIndex, raytracingActive, m_texWhite, m_texNormal, m_texBlack, m_primitives["Sphere"]);
 
             const GameObject* skyObject = nullptr;
             for (auto& o : m_gameObjects) {
@@ -5358,13 +5398,151 @@ void DXRenderer::WaitForFrame(UINT frameIndex) {
     WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
-void DXRenderer::FlushGPU() { 
+// Wraps the light's orthographic box around the whole scene. A bounding sphere
+// is used rather than a box so the projection does not change size as the light
+// or camera turns, which is what makes shadow edges crawl.
+DirectX::XMMATRIX DXRenderer::BuildSunLightMatrix(float& outWorldTexelSize) const {
+    using namespace DirectX;
+
+    XMFLOAT3 minimum{FLT_MAX, FLT_MAX, FLT_MAX};
+    XMFLOAT3 maximum{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    bool any = false;
+
+    for (const GameObject& object : m_gameObjects) {
+        if (!object.enabled || object.type == ObjectType::Skybox || object.type == ObjectType::PostProcessVolume) {
+            continue;
+        }
+        Mesh* mesh = (object.asset != nullptr) ? object.asset->mesh : nullptr;
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        const BoundingBox& local = mesh->GetBounds();
+        const float scaleX = fabsf(object.scale.x);
+        const float scaleY = fabsf(object.scale.y);
+        const float scaleZ = fabsf(object.scale.z);
+        // Rotation is folded in by taking the largest scaled extent as a radius,
+        // which over-covers slightly but never clips a caster.
+        const float reach = sqrtf(local.Extents.x * local.Extents.x * scaleX * scaleX +
+                                  local.Extents.y * local.Extents.y * scaleY * scaleY +
+                                  local.Extents.z * local.Extents.z * scaleZ * scaleZ);
+        const XMFLOAT3 centre{object.position.x + local.Center.x * scaleX,
+                              object.position.y + local.Center.y * scaleY,
+                              object.position.z + local.Center.z * scaleZ};
+
+        minimum.x = (std::min)(minimum.x, centre.x - reach);
+        minimum.y = (std::min)(minimum.y, centre.y - reach);
+        minimum.z = (std::min)(minimum.z, centre.z - reach);
+        maximum.x = (std::max)(maximum.x, centre.x + reach);
+        maximum.y = (std::max)(maximum.y, centre.y + reach);
+        maximum.z = (std::max)(maximum.z, centre.z + reach);
+        any = true;
+    }
+
+    if (!any) {
+        // Nothing to shadow. Give back something valid so the pass stays simple.
+        minimum = {-10.0f, -10.0f, -10.0f};
+        maximum = {10.0f, 10.0f, 10.0f};
+    }
+
+    const XMFLOAT3 centre{(minimum.x + maximum.x) * 0.5f,
+                          (minimum.y + maximum.y) * 0.5f,
+                          (minimum.z + maximum.z) * 0.5f};
+    const float radius = (std::max)(1.0f,
+        0.5f * sqrtf((maximum.x - minimum.x) * (maximum.x - minimum.x) +
+                     (maximum.y - minimum.y) * (maximum.y - minimum.y) +
+                     (maximum.z - minimum.z) * (maximum.z - minimum.z)));
+
+    XMVECTOR direction = XMVector3Normalize(XMLoadFloat3(&m_sunDirection));
+    if (XMVectorGetX(XMVector3LengthSq(direction)) < 0.5f) {
+        direction = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
+    }
+
+    const XMVECTOR target = XMLoadFloat3(&centre);
+    const XMVECTOR eye = XMVectorSubtract(target, XMVectorScale(direction, radius * 2.0f));
+    // A light pointing straight down would make the usual up vector degenerate.
+    const XMVECTOR up = (fabsf(XMVectorGetY(direction)) > 0.99f)
+        ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
+        : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+    const float extent = radius * 2.0f;
+    XMMATRIX projection = XMMatrixOrthographicLH(extent, extent, 0.05f, radius * 4.0f);
+
+    // Snap the light-space origin to whole texels. Without this the depth map
+    // resamples slightly differently every frame and the shadow edges shimmer
+    // as the camera moves.
+    const float texelsPerUnit = static_cast<float>(kShadowMapResolution) / extent;
+    XMMATRIX lightSpace = XMMatrixMultiply(view, projection);
+    XMVECTOR originInLight = XMVector3TransformCoord(XMVectorZero(), lightSpace);
+    const float halfResolution = static_cast<float>(kShadowMapResolution) * 0.5f;
+    const float originX = XMVectorGetX(originInLight) * halfResolution;
+    const float originY = XMVectorGetY(originInLight) * halfResolution;
+    const float offsetX = (roundf(originX) - originX) / halfResolution;
+    const float offsetY = (roundf(originY) - originY) / halfResolution;
+    lightSpace = XMMatrixMultiply(lightSpace, XMMatrixTranslation(offsetX, offsetY, 0.0f));
+
+    outWorldTexelSize = 1.0f / (std::max)(texelsPerUnit, 1e-6f);
+    return lightSpace;
+}
+
+void DXRenderer::RenderShadowMap() {
+    using namespace DirectX;
+
+    float worldTexelSize = 0.0f;
+    const XMMATRIX lightSpace = BuildSunLightMatrix(worldTexelSize);
+
+    const UINT objectStride = (sizeof(ConstantBufferData) + 255) & ~255u;
+    m_shadowPass.Render(m_commandList.Get(), m_gameObjects, m_pCbvDataBegin,
+                        m_constantBuffer->GetGPUVirtualAddress(), objectStride, lightSpace);
+
+    m_quantaMeshPass.m_shadowSrvHandle = (m_shadowMapBindlessIndex >= 0)
+        ? m_bindlessManager.GetGpuHandle(m_shadowMapBindlessIndex)
+        : D3D12_GPU_DESCRIPTOR_HANDLE{};
+    m_quantaMeshPass.m_shadowUvTexelSize = 1.0f / static_cast<float>(kShadowMapResolution);
+    m_quantaMeshPass.m_shadowWorldTexelSize = worldTexelSize;
+    m_shadowLightMatrix = lightSpace;
+}
+
+void DXRenderer::DeferUploadBufferRelease(Mesh* mesh) {
+    if (mesh == nullptr) {
+        return;
+    }
+
+    PendingUploadRelease pending;
+    mesh->TakeUploadBuffers(pending.stagingBuffers);
+    if (pending.stagingBuffers.empty()) {
+        return;
+    }
+
+    // The copy sits in the command list this frame will submit, and that
+    // submission signals m_fenceValue + 1.
+    pending.fenceValue = m_fenceValue + 1;
+    m_pendingUploadReleases.push_back(std::move(pending));
+}
+
+// Drops staging buffers the GPU has finished reading. Called wherever the
+// renderer already knows the fence has moved on.
+void DXRenderer::RetireCompletedUploadBuffers() {
+    if (m_pendingUploadReleases.empty()) {
+        return;
+    }
+
+    const UINT64 completed = m_fence->GetCompletedValue();
+    m_pendingUploadReleases.erase(
+        std::remove_if(m_pendingUploadReleases.begin(), m_pendingUploadReleases.end(),
+                       [completed](const PendingUploadRelease& pending) { return pending.fenceValue <= completed; }),
+        m_pendingUploadReleases.end());
+}
+
+void DXRenderer::FlushGPU() {
     m_fenceValue++; 
     m_commandQueue->Signal(m_fence.Get(), m_fenceValue); 
     if (m_fence->GetCompletedValue() < m_fenceValue) { 
         m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent); 
         WaitForSingleObject(m_fenceEvent, INFINITE); 
     }
+    RetireCompletedUploadBuffers();
 }
 void DXRenderer::RenderBlueprintPreview(const std::wstring& assetPath) {
     // Render a very simple preview – just the asset name in the lower

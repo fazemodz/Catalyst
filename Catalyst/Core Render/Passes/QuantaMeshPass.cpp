@@ -1,4 +1,5 @@
 #include "QuantaMeshPass.h"
+#include <algorithm>
 #include <d3dcompiler.h>
 #include <map>
 #include "Common.h"
@@ -6,6 +7,21 @@
 #include "../ShaderCompiler.h"
 
 namespace {
+// Mirrors IndirectCommand in QuantaCull.hlsl and the command signature below.
+struct IndirectDrawCommand {
+    uint32_t globalInstanceID;
+    uint32_t indexCountPerInstance;
+    uint32_t instanceCount;
+    uint32_t startIndexLocation;
+    int32_t baseVertexLocation;
+    uint32_t startInstanceLocation;
+};
+static_assert(sizeof(IndirectDrawCommand) == 24, "Command signature stride is 24 bytes");
+
+// Upper bound on draws produced in one dispatch. A cut through a dense model
+// lands in the low tens of thousands of clusters.
+constexpr uint32_t kMaxIndirectCommands = 262144;
+
 Texture* ResolveObjectTexture(const GameObject& obj, Texture* GameObject::* overrideSlot,
                               Texture* Asset::* assetSlot, Texture* Material::* materialSlot,
                               Texture* fallback) {
@@ -56,7 +72,9 @@ void QuantaMeshPass::CreateComputeBuffers(ID3D12Device* device)
         ThrowIfFailed(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialCB[frame])));
         m_materialCB[frame]->Map(0, nullptr, (void**)&m_mappedMaterialCB[frame]);
 
-        bufferDesc.Width = 24 * 10000;
+        // One command per surviving cluster, not per object, so this has to be
+        // sized for the cut through a dense mesh rather than the object count.
+        bufferDesc.Width = sizeof(IndirectDrawCommand) * kMaxIndirectCommands;
         bufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         ThrowIfFailed(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_commandBuffer[frame])));
 
@@ -95,13 +113,14 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     ComPtr<ID3DBlob> cs; hr = CatalystRender::CompileShaderFromFile(L"Shaders/QuantaCull.hlsl", nullptr, nullptr, "CSMain", "cs_5_1", standardFlags, 0, &cs, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "Compute Cull Failed");
 
-    D3D12_ROOT_PARAMETER crp[4] = {};
-    crp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; crp[0].Constants.ShaderRegister = 0; crp[0].Constants.RegisterSpace = 0; crp[0].Constants.Num32BitValues = 21; crp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_PARAMETER crp[5] = {};
+    crp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; crp[0].Constants.ShaderRegister = 0; crp[0].Constants.RegisterSpace = 0; crp[0].Constants.Num32BitValues = 25; crp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     crp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; crp[1].Descriptor.ShaderRegister = 0; crp[1].Descriptor.RegisterSpace = 0; crp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     crp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV; crp[2].Descriptor.ShaderRegister = 0; crp[2].Descriptor.RegisterSpace = 0; crp[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     crp[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV; crp[3].Descriptor.ShaderRegister = 1; crp[3].Descriptor.RegisterSpace = 0; crp[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    crp[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; crp[4].Descriptor.ShaderRegister = 1; crp[4].Descriptor.RegisterSpace = 0; crp[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    D3D12_ROOT_SIGNATURE_DESC crsDesc = {}; crsDesc.NumParameters = 4; crsDesc.pParameters = crp;
+    D3D12_ROOT_SIGNATURE_DESC crsDesc = {}; crsDesc.NumParameters = 5; crsDesc.pParameters = crp;
     ComPtr<ID3DBlob> csig; hr = D3D12SerializeRootSignature(&crsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &csig, &rsErr);
     if(FAILED(hr)) ThrowIfFailed(hr, rsErr ? (char*)rsErr->GetBufferPointer() : "Compute RS Serialize Failed");
     hr = device->CreateRootSignature(0, csig->GetBufferPointer(), csig->GetBufferSize(), IID_PPV_ARGS(&m_computeRootSignature));
@@ -120,12 +139,14 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     hr = CatalystRender::CompileShaderFromFile(L"Shaders/QuantaMesh.hlsl", nullptr, nullptr, "PSMain", "ps_5_1", standardFlags, 0, &ps, &err);
     if(FAILED(hr)) ThrowIfFailed(hr, err ? (char*)err->GetBufferPointer() : "Quanta PS Failed");
 
-    D3D12_INPUT_ELEMENT_DESC layout[] = { 
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }, 
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }, 
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }, 
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 36, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }, 
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } 
+    // Mirrors PackedVertex in Mesh.h. The input assembler expands the packed
+    // formats for free, so the shader only has to undo the octahedral fold.
+    D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R16G16_SNORM,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
     
     D3D12_ROOT_PARAMETER rpQ[6] = {}; 
@@ -199,7 +220,7 @@ void QuantaMeshPass::CreatePipelines(ID3D12Device* device) {
     ThrowIfFailed(hr, "Quanta graphics pipeline creation failed");
 }
 
-void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device* device, const std::vector<GameObject>& gameObjects, const Camera& camera, int width, int height, DirectX::XMMATRIX lightSpaceMatrix, DirectX::XMFLOAT3 activeLightDir, float activeIntensity, Texture* activeSkybox, ID3D12DescriptorHeap* bindlessHeap, UINT srvDescriptorSize, UINT frameIndex, bool writeGBuffer, Texture* texWhite, Texture* texNormal, Texture* texBlack, ID3D12DescriptorHeap* shadowSrvHeap, Mesh* defaultSphereMesh)
+void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device* device, const std::vector<GameObject>& gameObjects, const Camera& camera, int width, int height, DirectX::XMMATRIX lightSpaceMatrix, DirectX::XMFLOAT3 activeLightDir, float activeIntensity, Texture* activeSkybox, ID3D12DescriptorHeap* bindlessHeap, UINT srvDescriptorSize, UINT frameIndex, bool writeGBuffer, Texture* texWhite, Texture* texNormal, Texture* texBlack, Mesh* defaultSphereMesh)
 {
     using namespace DirectX;
     frameIndex = frameIndex % kFrameCount;
@@ -207,7 +228,13 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
         (writeGBuffer && m_quantaPipelineStateGBuffer) ? m_quantaPipelineStateGBuffer.Get() : m_quantaPipelineState.Get();
     XMMATRIX mView = camera.GetViewMatrix(); XMMATRIX mProj = camera.GetProjectionMatrix();
 
-    GlobalBufferData globalData = {}; globalData.viewProj = XMMatrixTranspose(mView * mProj); globalData.lightSpaceMatrix = lightSpaceMatrix; globalData.lightDir = activeLightDir; globalData.lightIntensity = activeIntensity; globalData.cameraPos = camera.GetPosition();
+    // Both matrices go across transposed, because the shaders transform with
+    // row vectors (mul(v, M)) against HLSL's column-major packing. Sending one
+    // transposed and the other not is a silent way to get a shadow lookup that
+    // lands nowhere near the surface being shaded.
+    GlobalBufferData globalData = {}; globalData.viewProj = XMMatrixTranspose(mView * mProj); globalData.lightSpaceMatrix = XMMatrixTranspose(lightSpaceMatrix); globalData.lightDir = activeLightDir; globalData.lightIntensity = activeIntensity; globalData.cameraPos = camera.GetPosition();
+    const bool shadowsBound = (m_shadowSrvHandle.ptr != 0) && (m_shadowUvTexelSize > 0.0f);
+    globalData.shadowParams = XMFLOAT4(m_shadowUvTexelSize, m_shadowWorldTexelSize, shadowsBound ? 1.0f : 0.0f, 0.0f);
     memcpy(m_mappedGlobalCB[frameIndex], &globalData, sizeof(GlobalBufferData));
 
     MaterialConstants mat = {}; mat.materialColor = XMFLOAT4(1, 1, 1, 1); mat.metallic = 0.5f; mat.roughness = 0.5f; mat.albedoIndex = texWhite->GetBindlessIndex(); mat.normalIndex = texNormal->GetBindlessIndex(); mat.metallicIndex = texBlack->GetBindlessIndex(); mat.roughnessIndex = texBlack->GetBindlessIndex();
@@ -252,7 +279,9 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
             m_mappedObjectData[frameIndex][index].colorOverride = resolvedColor;
             m_mappedObjectData[frameIndex][index].center = obj->position;
             m_mappedObjectData[frameIndex][index].radius = max(obj->scale.x, max(obj->scale.y, obj->scale.z));
-            m_mappedObjectData[frameIndex][index].indexCount = mesh->GetIndexCount();
+            // Only read when the mesh has no clusters, in which case this is
+            // the whole mesh anyway.
+            m_mappedObjectData[frameIndex][index].indexCount = mesh->GetBaseIndexCount();
             m_mappedObjectData[frameIndex][index].startIndexLocation = 0;
             m_mappedObjectData[frameIndex][index].baseVertexLocation = 0;
             m_mappedObjectData[frameIndex][index].albedoIndex = albedoTexture ? albedoTexture->GetBindlessIndex() : texWhite->GetBindlessIndex();
@@ -284,14 +313,58 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
         commandList->SetPipelineState(m_computePipelineState.Get());
         commandList->SetComputeRootSignature(m_computeRootSignature.Get());
 
-        struct CullConstants { XMMATRIX vp; XMFLOAT3 camPos; uint32_t count; uint32_t globalStartIndex; };
-        CullConstants cull = {}; cull.vp = XMMatrixTranspose(mView * mProj); cull.camPos = camera.GetPosition(); cull.count = instanceCount; cull.globalStartIndex = globalObjectIndex; 
+        // A cluster's error is stored in object-space units. Turning that into
+        // pixels needs the projection's vertical scale and the viewport height;
+        // the per-cluster divide by distance happens in the shader.
+        const float projectionScaleY = XMVectorGetY(XMVectorSet(0, XMVectorGetY(mProj.r[1]), 0, 0));
+        const float errorScale = 0.5f * static_cast<float>(height) * projectionScaleY;
 
-        commandList->SetComputeRoot32BitConstants(0, 21, &cull, 0);
+        const uint32_t clusterCount = mesh->HasClusters() ? mesh->GetClusterCount() : 0u;
+        uint32_t cullFlags = 0;
+        if (m_enableFrustumCulling) cullFlags |= 1u;
+        if (m_enableConeCulling)    cullFlags |= 2u;
+        if (m_enableClusterLod)     cullFlags |= 4u;
+
+        struct CullConstants {
+            XMMATRIX vp;
+            XMFLOAT3 camPos;
+            uint32_t count;
+            uint32_t globalStartIndex;
+            uint32_t clusterCount;
+            float errorScale;
+            float errorThreshold;
+            uint32_t cullFlags;
+        };
+        CullConstants cull = {};
+        cull.vp = XMMatrixTranspose(mView * mProj);
+        cull.camPos = camera.GetPosition();
+        cull.count = instanceCount;
+        cull.globalStartIndex = globalObjectIndex;
+        cull.clusterCount = clusterCount;
+        cull.errorScale = errorScale;
+        cull.errorThreshold = m_lodErrorThreshold;
+        cull.cullFlags = cullFlags;
+
+        // One thread per cluster per instance, or one per instance when the
+        // mesh carries no cluster data.
+        const uint64_t threadCount = (clusterCount > 0)
+            ? static_cast<uint64_t>(instanceCount) * clusterCount
+            : static_cast<uint64_t>(instanceCount);
+        const uint32_t groupCount = static_cast<uint32_t>((std::min<uint64_t>(threadCount, 0xFFFFFFFFull) + 63) / 64);
+
+        commandList->SetComputeRoot32BitConstants(0, 25, &cull, 0);
         commandList->SetComputeRootShaderResourceView(1, m_objectDataBuffer[frameIndex]->GetGPUVirtualAddress());
         commandList->SetComputeRootUnorderedAccessView(2, m_commandBuffer[frameIndex]->GetGPUVirtualAddress());
         commandList->SetComputeRootUnorderedAccessView(3, m_counterBuffer[frameIndex]->GetGPUVirtualAddress());
-        commandList->Dispatch((instanceCount + 63) / 64, 1, 1);
+        // The shader only reads t1 when clusterCount is non-zero, but the root
+        // signature still demands a valid address, so point it at the object
+        // buffer when there is no cluster table.
+        commandList->SetComputeRootShaderResourceView(4, (clusterCount > 0)
+            ? mesh->GetClusterBufferAddress()
+            : m_objectDataBuffer[frameIndex]->GetGPUVirtualAddress());
+        if (groupCount > 0) {
+            commandList->Dispatch(groupCount, 1, 1);
+        }
 
         D3D12_RESOURCE_BARRIER endBarriers[2] = {};
         endBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; endBarriers[0].Transition.pResource = m_counterBuffer[frameIndex].Get(); endBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; endBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT; endBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -306,13 +379,25 @@ void QuantaMeshPass::Render(ID3D12GraphicsCommandList* commandList, ID3D12Device
         commandList->SetGraphicsRootShaderResourceView(2, m_objectDataBuffer[frameIndex]->GetGPUVirtualAddress());
         commandList->SetGraphicsRootDescriptorTable(3, bindlessHeap->GetGPUDescriptorHandleForHeapStart());
 
-        if (shadowSrvHeap) commandList->SetGraphicsRootDescriptorTable(4, shadowSrvHeap->GetGPUDescriptorHandleForHeapStart());
+        // Root parameter 4 is the shadow map. Its descriptor has to live in the
+        // heap bound above - only one CBV/SRV/UAV heap can be active at a time,
+        // which is why pointing this at the shadow pass's own private heap
+        // silently produced nothing.
+        commandList->SetGraphicsRootDescriptorTable(4, shadowsBound
+            ? m_shadowSrvHandle
+            : bindlessHeap->GetGPUDescriptorHandleForHeapStart());
 
         D3D12_VERTEX_BUFFER_VIEW vbv = mesh->GetVertexView(); D3D12_INDEX_BUFFER_VIEW ibv = mesh->GetIndexView();
         commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->IASetVertexBuffers(0, 1, &vbv); commandList->IASetIndexBuffer(&ibv);
 
-        commandList->ExecuteIndirect(m_commandSignature.Get(), instanceCount, m_commandBuffer[frameIndex].Get(), 0, m_counterBuffer[frameIndex].Get(), 0);
+        // The counter caps how many actually run; this is only the ceiling.
+        const uint64_t maxCommands = (clusterCount > 0)
+            ? static_cast<uint64_t>(instanceCount) * clusterCount
+            : static_cast<uint64_t>(instanceCount);
+        const UINT maxCommandCount = static_cast<UINT>(std::min<uint64_t>(maxCommands, kMaxIndirectCommands));
+        m_lastVisibleClusterEstimate = maxCommandCount;
+        commandList->ExecuteIndirect(m_commandSignature.Get(), maxCommandCount, m_commandBuffer[frameIndex].Get(), 0, m_counterBuffer[frameIndex].Get(), 0);
         globalObjectIndex += instanceCount;
     }
 

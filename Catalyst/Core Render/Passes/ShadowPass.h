@@ -8,6 +8,14 @@
 
 using Microsoft::WRL::ComPtr;
 
+// Side length of the directional light's depth map. The renderer needs this to
+// work out how large a texel is in world units, which is what the shadow bias
+// and the PCF kernel are measured in.
+static constexpr UINT kShadowMapResolution = 2048;
+
+// Matches the slot count the renderer allocates in its shared constant buffer.
+static constexpr UINT kMaxShadowCasters = 1000;
+
 class ShadowPass {
 public:
     void Initialize(ID3D12Device* device);

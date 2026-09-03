@@ -23,7 +23,7 @@ public:
                 int width, int height,
                 DirectX::XMMATRIX lightSpaceMatrix, DirectX::XMFLOAT3 activeLightDir, float activeIntensity, Texture* activeSkybox,
                 ID3D12DescriptorHeap* bindlessHeap, UINT srvDescriptorSize, UINT frameIndex, bool writeGBuffer,
-                Texture* texWhite, Texture* texNormal, Texture* texBlack, ID3D12DescriptorHeap* shadowSrvHeap,
+                Texture* texWhite, Texture* texNormal, Texture* texBlack,
                 Mesh* defaultSphereMesh); 
 
 private:
@@ -47,4 +47,23 @@ private:
 
     void CreatePipelines(ID3D12Device* device);
     void CreateComputeBuffers(ID3D12Device* device);
+
+public:
+    // Screen-space error budget, in pixels, that the cluster LOD cut is allowed
+    // to introduce. Lower means more triangles and a sharper silhouette.
+    float m_lodErrorThreshold = 1.0f;
+    bool m_enableFrustumCulling = true;
+    bool m_enableConeCulling = true;
+    bool m_enableClusterLod = true;
+
+    // Filled in each frame so the editor can show what the cull actually did.
+    uint32_t m_lastVisibleClusterEstimate = 0;
+
+    // Where the shadow map's SRV sits inside the bindless heap, and how big one
+    // of its texels is. Set by the renderer before Render; a zero handle or a
+    // zero texel size makes the shader skip shadowing altogether.
+    D3D12_GPU_DESCRIPTOR_HANDLE m_shadowSrvHandle = {};
+    float m_shadowUvTexelSize = 0.0f;
+    float m_shadowWorldTexelSize = 0.0f;
+
 };

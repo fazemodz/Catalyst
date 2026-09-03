@@ -2,6 +2,7 @@
 #include "../Core Render/DXRenderer.h"
 #include "../EngineApp.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -20,6 +21,49 @@ uint32_t PackMaterialColor(const DirectX::XMFLOAT4& color) {
     const uint32_t g = ToByte(color.y);
     const uint32_t b = ToByte(color.z);
     return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+// A texture picked from outside the project is copied in beside the material.
+// Linking one where it sits instead would write a path off this machine's
+// desktop into the asset, which resolves to nothing anywhere else.
+bool CopyTextureIntoProject(const fs::path& source, const fs::path& destinationFolder, fs::path& outDestination) {
+    std::error_code folderError;
+    fs::create_directories(destinationFolder, folderError);
+
+    std::error_code sourceSizeError;
+    const uintmax_t sourceSize = fs::file_size(source, sourceSizeError);
+
+    fs::path destination = destinationFolder / source.filename();
+    for (int attempt = 1; ; ++attempt) {
+        std::error_code existsError;
+        if (!fs::exists(destination, existsError) || existsError) {
+            break;
+        }
+
+        // Same name and same size is almost certainly this same texture,
+        // already imported, so re-assigning it should not pile up copies.
+        std::error_code destinationSizeError;
+        const uintmax_t destinationSize = fs::file_size(destination, destinationSizeError);
+        if (!sourceSizeError && !destinationSizeError && destinationSize == sourceSize) {
+            outDestination = destination;
+            return true;
+        }
+
+        if (attempt > 64) {
+            return false;
+        }
+        destination = destinationFolder /
+            (source.stem().wstring() + L"_" + std::to_wstring(attempt) + source.extension().wstring());
+    }
+
+    std::error_code copyError;
+    fs::copy_file(source, destination, copyError);
+    if (copyError) {
+        return false;
+    }
+
+    outDestination = destination;
+    return true;
 }
 }
 
@@ -121,29 +165,345 @@ void EditorUI::DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Materia
         renderer->SaveMaterialAsset(*material, materialPath);
     };
 
-    auto AssignTextureSlot = [&](const char* label, std::string& linkedPath) {
-        drawList.AddText(fontMgr, std::string(label) + ": " + DescribeLinkedAsset(linkedPath), x, y + 15.0f, 0xFFAAAAAA);
-        y += 24.0f;
+    auto SetStatus = [&](const std::string& message, uint32_t color) {
+        State.saveStatusMessage = message;
+        State.saveStatusColor = color;
+        State.saveStatusUntil = GetTickCount() + 3600;
+    };
 
-        if (uiCtx.Button(std::string("Assign ") + label, x, y, width * 0.6f, 24.0f, 0xFF222222, 0xFF444444, 0xFF555555)) {
-            std::wstring chosenTexture = BrowseForTextureFile(hwnd);
-            if (!chosenTexture.empty() && !projectRoot.empty() && IsPathWithinRoot(chosenTexture, projectRoot)) {
-                linkedPath = BuildMaterialLink(materialPath, chosenTexture);
-                SaveMaterialState();
+    // One row per slot: thumbnail, the asset it points at, and the two ways to
+    // change it. Clicking the asset opens the project's own texture list, which
+    // is how this normally gets used; "..." is the way in for a file that has
+    // not been imported yet.
+    auto AssignTextureSlot = [&](const char* label, int slotIndex, std::string& linkedPath, Texture* linkedTexture) {
+        drawList.AddText(fontMgr, label, x, y + 14.0f, 0xFFAAAAAA);
+        y += 20.0f;
+
+        const float thumbSize = 34.0f;
+        const float gap = 6.0f;
+        const float browseW = 30.0f;
+        const float clearW = 26.0f;
+        const float nameW = (std::max)(60.0f, width - thumbSize - browseW - clearW - gap * 3.0f);
+        const float rowY = y + 5.0f;
+
+        drawList.AddRectFilled(x, y, thumbSize, thumbSize, 0xFF0D0D0D);
+        if (linkedTexture != nullptr && linkedTexture->GetBindlessIndex() >= 0) {
+            drawList.AddImage(static_cast<uint32_t>(linkedTexture->GetBindlessIndex()),
+                              x + 1.0f, y + 1.0f, thumbSize - 2.0f, thumbSize - 2.0f);
+        } else if (!linkedPath.empty()) {
+            // Linked but not resident: the file behind it is missing or failed
+            // to decode, which is worth showing rather than an empty square.
+            drawList.AddText(fontMgr, "!", x + 14.0f, y + 23.0f, 0xFFE0C36F);
+        }
+
+        const float nameX = x + thumbSize + gap;
+        const std::string current = linkedPath.empty() ? std::string("None") : DescribeLinkedAsset(linkedPath);
+        if (uiCtx.Button(FitTextToWidth(fontMgr, current, nameW - 16.0f), nameX, rowY, nameW, 24.0f,
+                         0xFF222222, 0xFF3A3A3A, 0xFF151515)) {
+            OpenTexturePicker(slotIndex, materialPath, nameX, rowY + 28.0f);
+        }
+
+        if (uiCtx.Button("...", nameX + nameW + gap, rowY, browseW, 24.0f, 0xFF2C2C2C, 0xFF444444, 0xFF1E1E1E)) {
+            const std::wstring chosenTexture = BrowseForTextureFile(hwnd);
+            if (!chosenTexture.empty()) {
+                fs::path linkTarget(chosenTexture);
+                bool ready = true;
+
+                // Anything from outside the project is brought in rather than
+                // rejected. Silently doing nothing here was indistinguishable
+                // from the assign button being broken.
+                if (projectRoot.empty() || !IsPathWithinRoot(chosenTexture, projectRoot)) {
+                    fs::path imported;
+                    ready = CopyTextureIntoProject(fs::path(chosenTexture), fs::path(materialPath).parent_path(), imported);
+                    if (ready) {
+                        linkTarget = imported;
+                        State.lastScanTime = 0;
+                        SetStatus("Imported " + imported.filename().string() + " into the project", 0xFF89D185);
+                    } else {
+                        SetStatus("Could not copy " + fs::path(chosenTexture).filename().string() + " into the project", 0xFFE07A7A);
+                    }
+                }
+
+                if (ready) {
+                    linkedPath = BuildMaterialLink(materialPath, linkTarget.wstring());
+                    SaveMaterialState();
+                    SetStatus(std::string(label) + " set to " + linkTarget.filename().string(), 0xFF89D185);
+                }
             }
         }
 
-        if (uiCtx.Button(std::string("Clear ") + label, x + width * 0.65f, y, width * 0.35f, 24.0f, 0xFF303030, 0xFF555555, 0xFF666666)) {
+        if (uiCtx.Button("X", nameX + nameW + gap + browseW + gap, rowY, clearW, 24.0f,
+                         0xFF303030, 0xFF553333, 0xFF241818)) {
             linkedPath.clear();
             SaveMaterialState();
+            SetStatus(std::string(label) + " cleared", 0xFF89D185);
         }
 
-        y += 34.0f;
+        y += thumbSize + 8.0f;
     };
 
-    AssignTextureSlot("Base Color", material->albedoPath);
-    AssignTextureSlot("Normal", material->normalPath);
-    AssignTextureSlot("Roughness", material->roughnessPath);
+    AssignTextureSlot("Base Color", 0, material->albedoPath, material->albedoTexture);
+    AssignTextureSlot("Normal", 1, material->normalPath, material->normalTexture);
+    AssignTextureSlot("Roughness", 2, material->roughnessPath, material->roughnessTexture);
+}
+
+void EditorUI::OpenTexturePicker(int slot, const std::wstring& materialPath, float anchorX, float anchorY) {
+    State.showTexturePicker = true;
+    State.texturePickerJustOpened = true;
+    State.texturePickerSlot = slot;
+    State.texturePickerMaterialPath = materialPath;
+    State.texturePickerSearch.clear();
+    State.texturePickerSearchActive = false;
+    State.texturePickerScroll = 0.0f;
+    State.texturePickerAnchorX = anchorX;
+    State.texturePickerAnchorY = anchorY;
+    State.texturePickerAssets.clear();
+
+    const std::wstring projectRoot = !State.currentProjectFolder.empty()
+        ? State.currentProjectFolder
+        : FindProjectRootFromAssetPath(materialPath);
+    if (projectRoot.empty()) {
+        return;
+    }
+
+    // Everything under Assets, so a texture filed away in a subfolder is still
+    // offered. Scanned on open rather than per frame: this walks the tree.
+    const fs::path assetsRoot = fs::path(projectRoot) / L"Assets";
+    std::error_code rootError;
+    if (!fs::is_directory(assetsRoot, rootError) || rootError) {
+        return;
+    }
+
+    std::error_code iterError;
+    fs::recursive_directory_iterator iter(assetsRoot, fs::directory_options::skip_permission_denied, iterError);
+    const fs::recursive_directory_iterator endIter;
+    while (!iterError && iter != endIter) {
+        const fs::path entryPath = iter->path();
+        std::error_code entryError;
+        const bool isFile = iter->is_regular_file(entryError) && !entryError;
+        iter.increment(iterError);
+
+        if (!isFile) {
+            continue;
+        }
+
+        const std::string filename = entryPath.filename().string();
+        if (!IsTextureAssetName(filename)) {
+            continue;
+        }
+
+        std::error_code relativeError;
+        const fs::path relativeFolder = fs::relative(entryPath.parent_path(), assetsRoot, relativeError);
+        TextureAssetEntry entry;
+        entry.path = entryPath.wstring();
+        entry.name = filename;
+        entry.folder = (relativeError || relativeFolder.empty() || relativeFolder == L".")
+            ? std::string("Assets")
+            : "Assets/" + relativeFolder.generic_string();
+        State.texturePickerAssets.push_back(std::move(entry));
+
+        // A runaway tree should not stall the editor behind a directory walk.
+        if (State.texturePickerAssets.size() >= 4096) {
+            break;
+        }
+    }
+
+    std::sort(State.texturePickerAssets.begin(), State.texturePickerAssets.end(),
+              [](const TextureAssetEntry& left, const TextureAssetEntry& right) {
+                  if (left.folder != right.folder) {
+                      return left.folder < right.folder;
+                  }
+                  return ToLowerCopy(StringToWide(left.name)) < ToLowerCopy(StringToWide(right.name));
+              });
+}
+
+void EditorUI::GetTexturePickerRect(float w, float h, float& outX, float& outY, float& outW, float& outH) const {
+    outW = 380.0f;
+    outH = 430.0f;
+    // Hangs off the slot it was opened from, the way a combo does, but pulled
+    // back on screen when that slot sits near an edge.
+    outX = std::clamp(State.texturePickerAnchorX, 8.0f, (std::max)(8.0f, w - outW - 8.0f));
+    outY = std::clamp(State.texturePickerAnchorY, 8.0f, (std::max)(8.0f, h - outH - 8.0f));
+}
+
+void EditorUI::DrawTexturePicker(DXRenderer* renderer, float w, float h) {
+    if (!State.showTexturePicker) {
+        return;
+    }
+
+    // The material can go away underneath the picker - renamed, deleted, or the
+    // browser selection moved on - and there is nothing left to assign to.
+    std::error_code materialError;
+    if (State.texturePickerMaterialPath.empty() ||
+        !fs::exists(State.texturePickerMaterialPath, materialError) || materialError) {
+        State.showTexturePicker = false;
+        return;
+    }
+
+    auto& drawList = renderer->m_uiDrawList;
+    auto& uiCtx = renderer->m_uiContext;
+    auto& fontMgr = renderer->m_fontManager;
+
+    float popupX = 0.0f, popupY = 0.0f, popupW = 0.0f, popupH = 0.0f;
+    GetTexturePickerRect(w, h, popupX, popupY, popupW, popupH);
+
+    // The click that opened this is still the current frame's press, so the
+    // dismiss check has to sit out one frame or it closes immediately.
+    if (State.texturePickerJustOpened) {
+        State.texturePickerJustOpened = false;
+        State.texturePickerSearchActive = true;
+    } else if (g_InputManager && g_InputManager->IsMouseButtonPressed(0)) {
+        const bool insidePopup =
+            State.mx >= popupX && State.mx <= popupX + popupW &&
+            State.my >= popupY && State.my <= popupY + popupH;
+        if (!insidePopup) {
+            State.showTexturePicker = false;
+            return;
+        }
+    }
+
+    const float left = popupX + 12.0f;
+    const float contentW = popupW - 24.0f;
+    const char* slotLabel =
+        State.texturePickerSlot == 1 ? "Normal" :
+        State.texturePickerSlot == 2 ? "Roughness" : "Base Color";
+
+    drawList.AddRectFilled(popupX, popupY, popupW, popupH, 0xFF232323);
+    drawList.AddRectFilled(popupX, popupY, popupW, 30.0f, 0xFF181818);
+    drawList.AddRectFilled(popupX, popupY, popupW, 3.0f, 0xFFE07020);
+    drawList.AddText(fontMgr, std::string("Select Texture  -  ") + slotLabel, left, popupY + 21.0f, 0xFFE8E8E8);
+
+    float cursorY = popupY + 38.0f;
+    uiCtx.TextInput("TexturePickerSearch", State.texturePickerSearch, left, cursorY, contentW, 26.0f,
+                    State.texturePickerSearchActive);
+    if (State.texturePickerSearch.empty() && !State.texturePickerSearchActive) {
+        drawList.AddText(fontMgr, "Search", left + 8.0f, cursorY + 18.0f, 0xFF777777);
+    }
+    cursorY += 34.0f;
+
+    // Matched against the folder as well, so two textures with the same name in
+    // different folders can still be told apart by typing the folder.
+    std::vector<const TextureAssetEntry*> visible;
+    visible.reserve(State.texturePickerAssets.size());
+    const std::wstring search = ToLowerCopy(StringToWide(State.texturePickerSearch));
+    for (const TextureAssetEntry& entry : State.texturePickerAssets) {
+        if (search.empty() ||
+            ToLowerCopy(StringToWide(entry.name + " " + entry.folder)).find(search) != std::wstring::npos) {
+            visible.push_back(&entry);
+        }
+    }
+
+    const float footerH = 40.0f;
+    const float listX = left;
+    const float listY = cursorY;
+    const float listW = contentW;
+    const float listH = popupY + popupH - footerH - 8.0f - listY;
+    const float rowH = 40.0f;
+
+    drawList.AddRectFilled(listX, listY, listW, listH, 0xFF191919);
+
+    const float contentH = static_cast<float>(visible.size()) * rowH;
+    const int wheelDelta = g_InputManager ? g_InputManager->GetMouseWheelDelta() : 0;
+    if (wheelDelta != 0 &&
+        State.mx >= listX && State.mx <= listX + listW &&
+        State.my >= listY && State.my <= listY + listH) {
+        State.texturePickerScroll -= static_cast<float>(wheelDelta) * 36.0f;
+    }
+    State.texturePickerScroll = std::clamp(State.texturePickerScroll, 0.0f, (std::max)(0.0f, contentH - listH));
+
+    const TextureAssetEntry* chosen = nullptr;
+    drawList.PushClipRect(listX, listY, listW, listH);
+    if (visible.empty()) {
+        drawList.AddText(fontMgr,
+                         State.texturePickerAssets.empty()
+                             ? "No textures in this project yet - use ... to bring one in."
+                             : "Nothing matches that search.",
+                         listX + 10.0f, listY + 26.0f, 0xFF848484, listW - 20.0f);
+    }
+
+    for (size_t index = 0; index < visible.size(); ++index) {
+        const TextureAssetEntry& entry = *visible[index];
+        const float rowY = listY + static_cast<float>(index) * rowH - State.texturePickerScroll;
+        if (rowY + rowH < listY || rowY > listY + listH) {
+            continue;   // rows scrolled out of view cost nothing
+        }
+
+        const bool hovered = State.mx >= listX && State.mx <= listX + listW &&
+                             State.my >= rowY && State.my <= rowY + rowH &&
+                             State.my >= listY && State.my <= listY + listH;
+        if (hovered) {
+            drawList.AddRectFilled(listX, rowY, listW, rowH, 0xFF2F2F2F);
+        }
+
+        // Only textures already resident get a thumbnail. Decoding every map in
+        // the project to fill this list would mean a full-resolution 4K decode
+        // per row, which is a visible stall for rows nobody looked at. The rest
+        // show their format so an empty square does not read as a broken one.
+        drawList.AddRectFilled(listX + 4.0f, rowY + 4.0f, 32.0f, 32.0f, 0xFF0D0D0D);
+        const Texture* preview = renderer->FindTextureByPath(entry.path);
+        if (preview != nullptr && preview->GetBindlessIndex() >= 0) {
+            drawList.AddImage(static_cast<uint32_t>(preview->GetBindlessIndex()),
+                              listX + 5.0f, rowY + 5.0f, 30.0f, 30.0f);
+        } else {
+            std::string format = fs::path(entry.name).extension().string();
+            if (!format.empty()) {
+                format.erase(format.begin());
+                std::transform(format.begin(), format.end(), format.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+            }
+            drawList.AddText(fontMgr, format, listX + 8.0f, rowY + 25.0f, 0xFF5A5A5A);
+        }
+
+        drawList.AddText(fontMgr, FitTextToWidth(fontMgr, entry.name, listW - 52.0f),
+                         listX + 42.0f, rowY + 18.0f, 0xFFE8E8E8);
+        drawList.AddText(fontMgr, FitTextToWidth(fontMgr, entry.folder, listW - 52.0f),
+                         listX + 42.0f, rowY + 33.0f, 0xFF7E7E7E);
+
+        if (hovered && g_InputManager && g_InputManager->IsMouseButtonPressed(0)) {
+            chosen = &entry;
+        }
+    }
+    drawList.PopClipRect();
+
+    const float buttonY = popupY + popupH - 34.0f;
+    bool clearSlot = false;
+    if (uiCtx.Button("Clear Slot", left, buttonY, 110.0f, 26.0f, 0xFF3D3D3D, 0xFF484848, 0xFF2C2C2C)) {
+        clearSlot = true;
+    }
+    if (uiCtx.Button("Cancel", popupX + popupW - 92.0f, buttonY, 80.0f, 26.0f, 0xFF3D3D3D, 0xFF484848, 0xFF2C2C2C)) {
+        State.showTexturePicker = false;
+        return;
+    }
+    drawList.AddText(fontMgr, std::to_string(visible.size()) + " textures",
+                     left + 122.0f, buttonY + 18.0f, 0xFF7E7E7E);
+
+    if (chosen == nullptr && !clearSlot) {
+        return;
+    }
+
+    // Resolved through the cache rather than held as a pointer across frames,
+    // so a material reloaded from disk in the meantime is still the one edited.
+    Material* material = renderer->LoadMaterialAsset(State.texturePickerMaterialPath);
+    if (material != nullptr) {
+        const std::string link = clearSlot
+            ? std::string()
+            : BuildMaterialLink(State.texturePickerMaterialPath, chosen->path);
+        switch (State.texturePickerSlot) {
+        case 0: material->albedoPath = link; break;
+        case 1: material->normalPath = link; break;
+        case 2: material->roughnessPath = link; break;
+        default: break;
+        }
+        renderer->SaveMaterialAsset(*material, State.texturePickerMaterialPath);
+
+        State.saveStatusMessage = clearSlot
+            ? std::string(slotLabel) + " cleared"
+            : std::string(slotLabel) + " set to " + chosen->name;
+        State.saveStatusColor = 0xFF89D185;
+        State.saveStatusUntil = GetTickCount() + 3600;
+    }
+
+    State.showTexturePicker = false;
 }
 
 void EditorUI::DrawActorAssetViewer(DXRenderer* renderer, float w, float h) {
@@ -250,14 +610,20 @@ void EditorUI::DrawActorAssetViewer(DXRenderer* renderer, float w, float h) {
 
     drawList.AddRectFilled(10.0f, viewerTop + 14.0f, 320.0f, 192.0f, 0xA5131313);
     if (State.actorViewerShowStats) {
-        const uint32_t triangleCount = renderer->m_actorViewerAsset->mesh->GetIndexCount() / 3;
-        const uint32_t vertexCount = renderer->m_actorViewerAsset->mesh->GetIndexCount();
+        // The index buffer spans every LOD level once a mesh is clustered, so
+        // the figure worth showing is the full-detail level.
+        const uint32_t triangleCount = renderer->m_actorViewerAsset->mesh->GetBaseTriangleCount();
+        const uint32_t vertexCount = renderer->m_actorViewerAsset->mesh->GetVertexCount();
         drawList.AddText(fontMgr, "Preview Stats", 20.0f, viewerTop + 34.0f, 0xFFFFFFFF);
         drawList.AddText(fontMgr, "Asset: " + FitName(State.actorViewerTitle, 28), 20.0f, viewerTop + 58.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, "Triangles: " + std::to_string(triangleCount), 20.0f, viewerTop + 82.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, "Vertices: " + std::to_string(vertexCount), 20.0f, viewerTop + 106.0f, 0xFFD8D8D8);
         drawList.AddText(fontMgr, "Bounds Radius: " + FormatFloat(renderer->m_actorViewerBoundsRadius), 20.0f, viewerTop + 130.0f, 0xFFD8D8D8);
-        const size_t meshletCount = renderer->m_actorViewerAsset->mesh->GetMeshlets().size();
+        // Clusters are the real unit now; meshlets remain only for the old
+        // fixed-size debug colouring.
+        const size_t meshletCount = renderer->m_actorViewerAsset->mesh->HasClusters()
+            ? renderer->m_actorViewerAsset->mesh->GetClusterCount()
+            : renderer->m_actorViewerAsset->mesh->GetMeshlets().size();
         const std::string meshletLine = renderer->m_actorViewerAsset->useVirtualGeometry
             ? "Meshlets: " + std::to_string(meshletCount)
             : "Meshlets: " + std::to_string(meshletCount) + " (disabled)";
@@ -399,6 +765,12 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
         return;
     }
 
+    if (State.showTexturePicker) {
+        float pickerX = 0.0f, pickerY = 0.0f, pickerW = 0.0f, pickerH = 0.0f;
+        GetTexturePickerRect(w, h, pickerX, pickerY, pickerW, pickerH);
+        uiCtx.SetModalRegion(pickerX, pickerY, pickerW, pickerH);
+    }
+
     auto SetPreviewMesh = [&](int previewMeshIndex) {
         State.materialEditorPreviewMesh = previewMeshIndex;
         if (renderer->m_materialEditorPreviewAsset) {
@@ -516,6 +888,9 @@ void EditorUI::DrawMaterialAssetEditor(DXRenderer* renderer, float w, float h) {
 
     drawList.AddRectFilled(viewportW - 1.0f, 0.0f, 1.0f, h, 0xFF000000);
     drawList.AddRectFilled(0.0f, editorTop - 1.0f, viewportW, 1.0f, 0x33000000);
+
+    // Above the details panel it was opened from.
+    DrawTexturePicker(renderer, w, h);
 }
 
 

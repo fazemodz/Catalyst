@@ -1,109 +1,13 @@
 #include "ModelLoader.h"
-#define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h" 
 
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
-#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
 
 namespace {
-struct ObjIndexKey {
-    int vertexIndex = -1;
-    int texcoordIndex = -1;
-    int normalIndex = -1;
-
-    bool operator==(const ObjIndexKey& other) const {
-        return vertexIndex == other.vertexIndex &&
-               texcoordIndex == other.texcoordIndex &&
-               normalIndex == other.normalIndex;
-    }
-};
-
-struct ObjIndexKeyHash {
-    size_t operator()(const ObjIndexKey& key) const {
-        const size_t h1 = std::hash<int>{}(key.vertexIndex);
-        const size_t h2 = std::hash<int>{}(key.texcoordIndex);
-        const size_t h3 = std::hash<int>{}(key.normalIndex);
-        return h1 ^ (h2 << 1) ^ (h3 << 2);
-    }
-};
-
-MeshData LoadMeshDataFromPath(const fs::path& filepath) {
-    tinyobj::attrib_t attrib;
-    std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
-    std::string warn;
-    std::string err;
-
-    const std::string pathString = filepath.string();
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, pathString.c_str())) {
-        throw std::runtime_error("Failed to load model: " + pathString);
-    }
-
-    MeshData meshData;
-    size_t totalIndexCount = 0;
-    for (const auto& shape : shapes) {
-        totalIndexCount += shape.mesh.indices.size();
-    }
-
-    meshData.Vertices.reserve(totalIndexCount);
-    meshData.Indices.reserve(totalIndexCount);
-
-    std::unordered_map<ObjIndexKey, uint32_t, ObjIndexKeyHash> vertexCache;
-    vertexCache.reserve(totalIndexCount);
-
-    for (const auto& shape : shapes) {
-        for (const auto& index : shape.mesh.indices) {
-            const ObjIndexKey key{index.vertex_index, index.texcoord_index, index.normal_index};
-            const auto existingVertex = vertexCache.find(key);
-            if (existingVertex != vertexCache.end()) {
-                meshData.Indices.push_back(existingVertex->second);
-                continue;
-            }
-
-            Vertex vertex = {};
-            if (index.vertex_index >= 0 && (3 * index.vertex_index + 2) < static_cast<int>(attrib.vertices.size())) {
-                vertex.position = {
-                    attrib.vertices[3 * index.vertex_index + 0],
-                    attrib.vertices[3 * index.vertex_index + 1],
-                    attrib.vertices[3 * index.vertex_index + 2]
-                };
-            }
-
-            vertex.color = {1.0f, 1.0f, 1.0f, 1.0f};
-
-            if (index.texcoord_index >= 0 && (2 * index.texcoord_index + 1) < static_cast<int>(attrib.texcoords.size())) {
-                vertex.uv = {
-                    attrib.texcoords[2 * index.texcoord_index + 0],
-                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
-                };
-            }
-
-            if (index.normal_index >= 0 && (3 * index.normal_index + 2) < static_cast<int>(attrib.normals.size())) {
-                vertex.normal = {
-                    attrib.normals[3 * index.normal_index + 0],
-                    attrib.normals[3 * index.normal_index + 1],
-                    attrib.normals[3 * index.normal_index + 2]
-                };
-            } else {
-                vertex.normal = {0.0f, 1.0f, 0.0f};
-            }
-
-            vertex.tangent = {1.0f, 0.0f, 0.0f};
-
-            const uint32_t vertexIndex = static_cast<uint32_t>(meshData.Vertices.size());
-            meshData.Vertices.push_back(vertex);
-            meshData.Indices.push_back(vertexIndex);
-            vertexCache.emplace(key, vertexIndex);
-        }
-    }
-
-    return meshData;
-}
 
 Mesh* CreateUploadedMesh(const MeshData& meshData, ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {
     if (!device || !cmdQueue || meshData.Vertices.empty() || meshData.Indices.empty()) {
@@ -127,6 +31,11 @@ Mesh* CreateUploadedMesh(const MeshData& meshData, ID3D12Device* device, ID3D12C
         meshData.Vertices.size(),
         meshData.Indices.data(),
         meshData.Indices.size());
+
+    // Rides the same command list as the geometry copy, so it is covered by the
+    // fence wait below.
+    mesh->UploadClusters(device, commandList.Get(), meshData.Clusters,
+                         meshData.ClusterLevelCount, meshData.BaseTriangleCount);
 
     if (FAILED(commandList->Close())) {
         throw std::runtime_error("Failed to close mesh upload command list");
@@ -160,16 +69,80 @@ Mesh* CreateUploadedMesh(const MeshData& meshData, ID3D12Device* device, ID3D12C
     }
 
     CloseHandle(fenceEvent);
+
+    // The copy has landed, so the staging copy can go back to the heap. On a
+    // dense mesh that is hundreds of megabytes that would otherwise be held
+    // for the lifetime of the model.
+    mesh->ReleaseUploadBuffers();
     return mesh.release();
 }
+
 }
 
 MeshData ModelLoader::LoadMeshData(const std::string& filepath) {
-    return LoadMeshDataFromPath(fs::path(filepath));
+    return LoadMeshData(fs::path(filepath).wstring());
 }
 
 MeshData ModelLoader::LoadMeshData(const std::wstring& filepath) {
-    return LoadMeshDataFromPath(fs::path(filepath));
+    return LoadMeshData(filepath, MeshImportOptions());
+}
+
+MeshData ModelLoader::LoadMeshData(const std::wstring& filepath, const MeshImportOptions& options) {
+    return CatalystImport::ImportMeshFromSource(filepath, options, nullptr);
+}
+
+bool ModelLoader::ConvertToAsset(const std::wstring& sourcePath,
+                                 const std::wstring& destinationPath,
+                                 const MeshImportOptions& options,
+                                 CatalystImport::MeshBuildStats* outStats,
+                                 std::string* outError) {
+    try {
+        // Writing the converted geometry over the model it was read from would
+        // destroy the source, so refuse rather than trust the caller.
+        std::error_code compareError;
+        if (fs::exists(fs::path(destinationPath)) &&
+            fs::equivalent(fs::path(sourcePath), fs::path(destinationPath), compareError) && !compareError) {
+            if (outError != nullptr) {
+                *outError = "The destination is the same file as the source model.";
+            }
+            return false;
+        }
+
+        CatalystImport::MeshBuildStats stats;
+        // The destination file below is the permanent copy, so there is no
+        // point also filling the scratch cache with the same geometry.
+        const MeshData meshData = CatalystImport::ImportMeshFromSource(sourcePath, options, &stats, false);
+        if (meshData.Vertices.empty() || meshData.Indices.empty()) {
+            if (outError != nullptr) {
+                *outError = "The model contains no renderable geometry.";
+            }
+            return false;
+        }
+
+        std::error_code directoryError;
+        fs::create_directories(fs::path(destinationPath).parent_path(), directoryError);
+
+        // The options are baked into the written geometry, so the stamp here is
+        // only a record of what it came from.
+        if (!CatalystImport::WriteMeshBinary(destinationPath, meshData, 0, 0, options.Hash(), outError)) {
+            return false;
+        }
+
+        if (outStats != nullptr) {
+            *outStats = stats;
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (outError != nullptr) {
+            *outError = exception.what();
+        }
+        return false;
+    } catch (...) {
+        if (outError != nullptr) {
+            *outError = "The importer failed for an unknown reason.";
+        }
+        return false;
+    }
 }
 
 Mesh* ModelLoader::Load(const std::string& filepath, ID3D12Device* device, ID3D12CommandQueue* cmdQueue) {

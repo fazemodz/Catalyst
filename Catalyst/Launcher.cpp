@@ -1,6 +1,9 @@
 #include "Launcher.h"
 #include "Json.h"
+#include "ProjectFields.h"
 #include "Resources/PakFile.h"
+#include "Resources/ModelLoader.h"
+#include "Resources/Material.h"
 #include <commdlg.h>
 #include <shobjidl.h>
 #include <shellapi.h>
@@ -478,7 +481,7 @@ std::wstring BrowseForAssetFile(HWND ownerWindow) {
     ofn.hwndOwner = ownerWindow;
     ofn.lpstrFile = szFile;
     ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
-    ofn.lpstrFilter = L"Supported Assets (*.obj;*.png;*.jpg;*.jpeg)\0*.obj;*.png;*.jpg;*.jpeg\0Wavefront OBJ (*.obj)\0*.obj\0Textures (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = L"Supported Assets (*.obj;*.fbx;*.png;*.jpg;*.jpeg)\0*.obj;*.fbx;*.png;*.jpg;*.jpeg\0Models (*.obj;*.fbx)\0*.obj;*.fbx\0Wavefront OBJ (*.obj)\0*.obj\0Autodesk FBX (*.fbx)\0*.fbx\0Textures (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
@@ -602,40 +605,356 @@ std::wstring BrowseForMapFile(HWND ownerWindow) {
     return L"";
 }
 
-bool ImportAssetToProject(const std::wstring& sourcePath, const std::wstring& projectAssetsFolder, const std::wstring& newName, std::wstring* importedPath) {
-    if (sourcePath.empty() || projectAssetsFolder.empty() || newName.empty()) return false;
-    
+bool IsImportableModelExtension(const std::wstring& extension) {
+    return extension == L".obj" || extension == L".fbx";
+}
+
+namespace {
+
+// An FBX records both a relative path and the absolute one from whichever
+// machine authored it. The absolute one is almost never valid here, so the
+// search works outward from the model's own folder.
+fs::path ResolveTextureOnDisk(const fs::path& modelFolder, const CatalystImport::FbxTextureReference& reference) {
+    std::vector<fs::path> candidates;
+
+    if (!reference.RelativePath.empty()) {
+        // FBX writes these with backslashes regardless of platform.
+        std::string relative = reference.RelativePath;
+        std::replace(relative.begin(), relative.end(), '\\', '/');
+        candidates.push_back(modelFolder / fs::path(relative));
+        candidates.push_back(modelFolder / fs::path(relative).filename());
+    }
+
+    if (!reference.AbsolutePath.empty()) {
+        std::string absolute = reference.AbsolutePath;
+        std::replace(absolute.begin(), absolute.end(), '\\', '/');
+        const fs::path asWritten(absolute);
+        candidates.push_back(asWritten);
+        // The filename alone is the part most likely to still be true.
+        candidates.push_back(modelFolder / asWritten.filename());
+        for (const wchar_t* folder : {L"textures", L"Textures", L"tex", L"maps", L"Maps"}) {
+            candidates.push_back(modelFolder / folder / asWritten.filename());
+        }
+    }
+
+    std::error_code error;
+    for (const fs::path& candidate : candidates) {
+        if (!candidate.empty() && fs::exists(candidate, error) && fs::is_regular_file(candidate, error)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+std::string TextureDisplayName(const CatalystImport::FbxTextureReference& reference) {
+    std::string name = reference.RelativePath.empty() ? reference.AbsolutePath : reference.RelativePath;
+    const size_t slash = name.find_last_of("/\\");
+    return slash == std::string::npos ? name : name.substr(slash + 1);
+}
+
+std::wstring ToLowerWide(const std::wstring& value) {
+    std::wstring lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
+    return lowered;
+}
+
+// Prefix with the asset name so two models with a texture called "diffuse.png"
+// cannot overwrite one another. A map already named after the model keeps its
+// own name rather than carrying it twice.
+fs::path MakeImportedTextureName(const fs::path& assetPath, const fs::path& sourceTexture) {
+    const std::wstring assetStem = assetPath.stem().wstring();
+    if (ToLowerWide(sourceTexture.stem().wstring()).rfind(ToLowerWide(assetStem), 0) == 0) {
+        return sourceTexture.filename();
+    }
+    return fs::path(assetStem + L"_" + sourceTexture.filename().wstring());
+}
+
+// Names the slot a map belongs to from its filename. Only the tokens listed
+// here count: a cavity, displacement, AO, specular or gloss map has no slot to
+// go in, and guessing one for it is worse than leaving it out.
+CatalystImport::FbxTextureSlot ClassifyTextureFileName(const std::wstring& stem) {
+    std::vector<std::wstring> tokens;
+    std::wstring current;
+    for (wchar_t ch : ToLowerWide(stem)) {
+        if (ch == L'_' || ch == L'-' || ch == L'.' || ch == L' ') {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += ch;
+        }
+    }
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+
+    // Read back from the end, so a trailing UDIM or resolution tag is stepped
+    // over rather than mistaken for the slot name.
+    for (size_t index = tokens.size(); index-- > 0;) {
+        const std::wstring& token = tokens[index];
+        if (token == L"basecolor" || token == L"basecolour" || token == L"albedo" ||
+            token == L"diffuse" || token == L"diff" ||
+            token == L"color" || token == L"colour" || token == L"col") {
+            return CatalystImport::FbxTextureSlot::Albedo;
+        }
+        if (token == L"normal" || token == L"normalgl" || token == L"normaldx" ||
+            token == L"nrm" || token == L"norm" || token == L"nor") {
+            return CatalystImport::FbxTextureSlot::Normal;
+        }
+        if (token == L"roughness" || token == L"rough" || token == L"rgh") {
+            return CatalystImport::FbxTextureSlot::Roughness;
+        }
+    }
+
+    return CatalystImport::FbxTextureSlot::Unknown;
+}
+
+struct SidecarTexture {
+    fs::path file;
+    CatalystImport::FbxTextureSlot slot = CatalystImport::FbxTextureSlot::Unknown;
+};
+
+// Marketplace and scan-library exports routinely carry no texture nodes at all:
+// the maps sit beside the model, named after it with a suffix. When the file
+// references nothing, the folder is the only thing left to go on.
+std::vector<SidecarTexture> FindSidecarTextures(const fs::path& modelPath) {
+    std::vector<SidecarTexture> found;
+    const fs::path modelFolder = modelPath.parent_path();
+    if (modelFolder.empty()) {
+        return found;
+    }
+
+    const std::wstring modelStem = ToLowerWide(modelPath.stem().wstring());
+    const fs::directory_iterator endIter;
+
+    // With one model in the folder, every map in it belongs to that model. With
+    // several, only the ones named after this one do.
+    uint32_t modelCount = 0;
+    std::error_code countError;
+    fs::directory_iterator countIter(modelFolder, fs::directory_options::skip_permission_denied, countError);
+    while (!countError && countIter != endIter) {
+        std::error_code entryError;
+        const bool isFile = countIter->is_regular_file(entryError) && !entryError;
+        const fs::path filePath = countIter->path();
+        countIter.increment(countError);
+        if (isFile && IsImportableModelExtension(ToLowerWide(filePath.extension().wstring()))) {
+            ++modelCount;
+        }
+    }
+    const bool folderBelongsToThisModel = (modelCount <= 1);
+
+    std::vector<fs::path> searchFolders{modelFolder};
+    for (const wchar_t* subfolder : {L"textures", L"tex", L"maps"}) {
+        std::error_code subError;
+        const fs::path candidate = modelFolder / subfolder;
+        if (fs::is_directory(candidate, subError) && !subError) {
+            searchFolders.push_back(candidate);
+        }
+    }
+
+    for (const fs::path& folder : searchFolders) {
+        std::error_code iterError;
+        fs::directory_iterator iter(folder, fs::directory_options::skip_permission_denied, iterError);
+        while (!iterError && iter != endIter) {
+            std::error_code entryError;
+            const bool isFile = iter->is_regular_file(entryError) && !entryError;
+            const fs::path filePath = iter->path();
+            iter.increment(iterError);
+            if (!isFile || !IsTextureExtension(ToLowerWide(filePath.extension().wstring()))) {
+                continue;
+            }
+
+            const std::wstring stem = ToLowerWide(filePath.stem().wstring());
+            if (!folderBelongsToThisModel && stem.rfind(modelStem, 0) != 0) {
+                continue;
+            }
+
+            const CatalystImport::FbxTextureSlot slot = ClassifyTextureFileName(stem);
+            if (slot == CatalystImport::FbxTextureSlot::Albedo ||
+                slot == CatalystImport::FbxTextureSlot::Normal ||
+                slot == CatalystImport::FbxTextureSlot::Roughness) {
+                found.push_back({filePath, slot});
+            }
+        }
+    }
+
+    return found;
+}
+
+}
+
+ImportedTextureResult ImportModelTextures(const std::wstring& sourceModelPath,
+                                          const std::wstring& importedAssetPath,
+                                          const std::vector<CatalystImport::FbxTextureReference>& textures) {
+    // No early out on an empty list: a file that references nothing is exactly
+    // the case the sidecar scan below exists for.
+    ImportedTextureResult result;
+
+    const fs::path modelFolder = fs::path(sourceModelPath).parent_path();
+    const fs::path assetPath(importedAssetPath);
+    const fs::path destinationFolder = assetPath.parent_path();
+
+    Material material;
+    material.name = assetPath.stem().string();
+    bool wroteAnySlot = false;
+
+    for (const CatalystImport::FbxTextureReference& reference : textures) {
+        const fs::path found = ResolveTextureOnDisk(modelFolder, reference);
+        if (found.empty()) {
+            ++result.missing;
+            result.missingNames.push_back(TextureDisplayName(reference));
+            continue;
+        }
+
+        const fs::path destination = destinationFolder / MakeImportedTextureName(assetPath, found);
+
+        std::error_code copyError;
+        fs::copy_file(found, destination, fs::copy_options::overwrite_existing, copyError);
+        if (copyError) {
+            ++result.missing;
+            result.missingNames.push_back(TextureDisplayName(reference));
+            continue;
+        }
+        ++result.copied;
+
+        const std::string link = destination.filename().generic_string();
+        switch (reference.Slot) {
+        case CatalystImport::FbxTextureSlot::Albedo:
+            if (material.albedoPath.empty()) { material.albedoPath = link; wroteAnySlot = true; }
+            break;
+        case CatalystImport::FbxTextureSlot::Normal:
+            if (material.normalPath.empty()) { material.normalPath = link; wroteAnySlot = true; }
+            break;
+        case CatalystImport::FbxTextureSlot::Roughness:
+            if (material.roughnessPath.empty()) { material.roughnessPath = link; wroteAnySlot = true; }
+            break;
+        default:
+            // Copied so the artist has it, but not guessed into a slot.
+            break;
+        }
+    }
+
+    // Whatever the file itself did not name. Slots already filled from its own
+    // references win, so this only ever adds.
+    if (material.albedoPath.empty() || material.normalPath.empty() || material.roughnessPath.empty()) {
+        for (const SidecarTexture& sidecar : FindSidecarTextures(fs::path(sourceModelPath))) {
+            std::string* slot = nullptr;
+            switch (sidecar.slot) {
+            case CatalystImport::FbxTextureSlot::Albedo:    slot = &material.albedoPath; break;
+            case CatalystImport::FbxTextureSlot::Normal:    slot = &material.normalPath; break;
+            case CatalystImport::FbxTextureSlot::Roughness: slot = &material.roughnessPath; break;
+            default: break;
+            }
+            if (slot == nullptr || !slot->empty()) {
+                continue;
+            }
+
+            const fs::path destination = destinationFolder / MakeImportedTextureName(assetPath, sidecar.file);
+            std::error_code copyError;
+            fs::copy_file(sidecar.file, destination, fs::copy_options::overwrite_existing, copyError);
+            if (copyError) {
+                continue;
+            }
+
+            ++result.copied;
+            *slot = destination.filename().generic_string();
+            wroteAnySlot = true;
+        }
+    }
+
+    if (wroteAnySlot) {
+        const fs::path materialPath = destinationFolder / (assetPath.stem().wstring() + L".catalystmat");
+        if (material.SaveToFile(materialPath.wstring())) {
+            result.materialPath = materialPath.wstring();
+        }
+    }
+    return result;
+}
+
+bool ImportAssetToProject(const std::wstring& sourcePath,
+                          const std::wstring& projectAssetsFolder,
+                          const std::wstring& newName,
+                          const MeshImportOptions& meshOptions,
+                          std::wstring* importedPath,
+                          CatalystImport::MeshBuildStats* outStats,
+                          std::string* outError) {
+    if (sourcePath.empty() || projectAssetsFolder.empty() || newName.empty()) {
+        if (outError != nullptr) {
+            *outError = "The import is missing a source file, a destination folder, or a name.";
+        }
+        return false;
+    }
+
     fs::path src(sourcePath);
     fs::path destFolder(projectAssetsFolder);
     std::wstring ext = src.extension().wstring();
     std::transform(ext.begin(), ext.end(), ext.begin(), towlower);
 
-    const bool isActor = ext == L".obj";
+    const bool isModel = IsImportableModelExtension(ext);
     const bool isTexture = IsTextureExtension(ext);
-    if (!isActor && !isTexture) {
+    if (!isModel && !isTexture) {
+        if (outError != nullptr) {
+            *outError = "That file type cannot be imported.";
+        }
         return false;
     }
-    
+
+    std::error_code folderError;
     if (!fs::exists(destFolder)) {
-        fs::create_directories(destFolder);
+        fs::create_directories(destFolder, folderError);
+        if (folderError) {
+            if (outError != nullptr) {
+                *outError = "Could not create the destination folder.";
+            }
+            return false;
+        }
     }
-    
+
     fs::path destFile = destFolder / newName;
-    if (isActor) {
-        destFile.replace_extension(L".catalystactor");
-    } else {
-        destFile.replace_extension(ext);
-    }
-    
-    try {
-        fs::copy_file(src, destFile, fs::copy_options::overwrite_existing);
-        if (importedPath) {
+    destFile.replace_extension(isModel ? L".catalystactor" : ext);
+
+    if (isModel) {
+        // Parse, weld, shade and reorder once here rather than on every load.
+        CatalystImport::MeshBuildStats localStats;
+        CatalystImport::MeshBuildStats* stats = (outStats != nullptr) ? outStats : &localStats;
+        if (!ModelLoader::ConvertToAsset(src.wstring(), destFile.wstring(), meshOptions, stats, outError)) {
+            return false;
+        }
+        // Bring the textures the model refers to along with it, so the asset is
+        // usable rather than untextured on arrival.
+        const ImportedTextureResult textureResult =
+            ImportModelTextures(src.wstring(), destFile.wstring(), stats->textures);
+        stats->texturesCopied = textureResult.copied;
+        stats->texturesMissing = textureResult.missing;
+        stats->wroteMaterial = !textureResult.materialPath.empty();
+        if (importedPath != nullptr) {
             *importedPath = destFile.wstring();
         }
         return true;
+    }
+
+    try {
+        fs::copy_file(src, destFile, fs::copy_options::overwrite_existing);
+        if (importedPath != nullptr) {
+            *importedPath = destFile.wstring();
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (outError != nullptr) {
+            *outError = exception.what();
+        }
+        return false;
     } catch (...) {
+        if (outError != nullptr) {
+            *outError = "Copying the file failed.";
+        }
         return false;
     }
+}
+
+bool ImportAssetToProject(const std::wstring& sourcePath, const std::wstring& projectAssetsFolder, const std::wstring& newName, std::wstring* importedPath) {
+    return ImportAssetToProject(sourcePath, projectAssetsFolder, newName, MeshImportOptions(), importedPath, nullptr, nullptr);
 }
 
 std::vector<std::wstring> GetRecentProjects() {
@@ -714,22 +1033,8 @@ ProjectInfo ParseProjectFile(const std::wstring& path) {
     if (!file.is_open()) return info;
 
     std::wstring content((std::istreambuf_iterator<wchar_t>(file)), std::istreambuf_iterator<wchar_t>());
-    
-    std::wsmatch match;
-    std::wregex nameRegex(L"\"ProjectName\"\\s*:\\s*\"([^\"]+)\"");
-    if (std::regex_search(content, match, nameRegex) && match.size() > 1) {
-        info.ProjectName = match[1].str();
-    }
 
-    std::wregex versionRegex(L"\"EngineVersion\"\\s*:\\s*\"([^\"]+)\"");
-    if (std::regex_search(content, match, versionRegex) && match.size() > 1) {
-        info.EngineVersion = match[1].str();
-    }
-
-    std::wregex startupRegex(L"\"StartupScene\"\\s*:\\s*\"([^\"]*)\"");
-    if (std::regex_search(content, match, startupRegex) && match.size() > 1) {
-        info.StartupScene = match[1].str();
-    }
+    ParseProjectFieldsFromJson(content, info.ProjectName, info.EngineVersion, info.StartupScene);
 
     ReadProjectSettings(path, info.Settings);
     return info;
