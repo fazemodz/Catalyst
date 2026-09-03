@@ -7,7 +7,18 @@
 class BindlessManager {
 public:
     void Initialize(ID3D12Device* device, UINT maxTextures);
-    int AddTexture(ID3D12Device* device, ID3D12Resource* texture);
+
+    // srvDesc is optional. It has to be supplied for anything the default
+    // description cannot express - a depth buffer, for one, is created as a
+    // typeless resource and has no format an SRV can be built from directly.
+    int AddTexture(ID3D12Device* device,
+                   ID3D12Resource* texture,
+                   const D3D12_SHADER_RESOURCE_VIEW_DESC* srvDesc = nullptr);
+
+    // Only one CBV/SRV/UAV heap can be bound at a time, so anything a shader
+    // must reach has to live in this heap. This hands back the address to point
+    // a root descriptor table at.
+    D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle(int index) const;
 
     // Returns a slot to the pool so it can back a different texture later.
     // Without this the heap is a one-way allocator and every reload of an

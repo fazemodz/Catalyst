@@ -17,6 +17,13 @@ struct BrowserItem {
     bool isFolder;
 };
 
+// One already-imported texture, as offered by the material slot picker.
+struct TextureAssetEntry {
+    std::wstring path;      // absolute, as it sits on disk
+    std::string name;       // filename, what the row shows
+    std::string folder;     // where it lives relative to Assets, for telling
+};                          // two "BaseColor.png" files apart
+
 struct LogEntry {
     std::string timestamp;
     std::string message;
@@ -26,6 +33,17 @@ struct LogEntry {
 struct ActorViewerMeshLoadJob {
     std::atomic<bool> completed{false};
     MeshData meshData;
+};
+
+// Converting a dense model takes seconds, so it runs on a worker and the
+// editor polls this instead of locking up behind the dialog.
+struct AssetImportJob {
+    std::atomic<bool> completed{false};
+    bool succeeded = false;
+    std::wstring importedPath;
+    std::string error;
+    std::string displayName;
+    CatalystImport::MeshBuildStats stats;
 };
 
 struct EditorUIState {
@@ -56,6 +74,10 @@ struct EditorUIState {
     std::string pendingImportName = "";
     bool isImportNameActive = false;
     bool wasImportJustOpened = false;
+    bool pendingImportIsModel = false;
+    std::string pendingImportSourceLabel = "";
+    MeshImportOptions importOptions;
+    std::shared_ptr<AssetImportJob> activeImportJob;
     bool showContextMenu = false;
     float contextMenuX = 0.0f;
     float contextMenuY = 0.0f;
@@ -165,6 +187,19 @@ struct EditorUIState {
     float materialEditorViewportW = 1.0f;
     float materialEditorViewportH = 1.0f;
 
+    // Picker for assigning a texture the project already holds to a material
+    // slot, rather than going back out to a file dialog for it.
+    bool showTexturePicker = false;
+    bool texturePickerJustOpened = false;
+    int texturePickerSlot = -1;                 // 0 base colour, 1 normal, 2 roughness
+    std::wstring texturePickerMaterialPath = L"";
+    std::string texturePickerSearch = "";
+    bool texturePickerSearchActive = false;
+    float texturePickerScroll = 0.0f;
+    float texturePickerAnchorX = 0.0f;
+    float texturePickerAnchorY = 0.0f;
+    std::vector<TextureAssetEntry> texturePickerAssets;
+
     std::future<MeshData> asyncMeshFuture;
     std::atomic<bool> isAsyncLoading{false};
     std::string pendingAssetName = "";
@@ -224,4 +259,9 @@ private:
                                float x, float width, float& y);
     void DrawMaterialTextureSlots(DXRenderer* renderer, HWND hwnd, Material* material, const std::wstring& materialPath,
                                   float x, float width, float& y);
+    void OpenTexturePicker(int slot, const std::wstring& materialPath, float anchorX, float anchorY);
+    // Shared by the draw and by the modal region set at the top of the frame,
+    // so the two cannot drift apart.
+    void GetTexturePickerRect(float w, float h, float& outX, float& outY, float& outW, float& outH) const;
+    void DrawTexturePicker(DXRenderer* renderer, float w, float h);
 };

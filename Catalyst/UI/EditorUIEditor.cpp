@@ -10,8 +10,10 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <cstdio>
 #include <fstream>
 #include <functional>
+#include <thread>
 using namespace EditorUIInternal;
 
 namespace {
@@ -173,8 +175,26 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
     auto OpenImportPopup = [&]() {
         std::wstring sourceFile = BrowseForAssetFile(hwnd);
         if (!sourceFile.empty() && !State.currentBrowserPath.empty()) {
+            const fs::path source(sourceFile);
             State.pendingImportPath = sourceFile;
-            State.pendingImportName = std::filesystem::path(sourceFile).stem().string();
+            State.pendingImportName = source.stem().string();
+            State.pendingImportIsModel = IsImportableModelExtension(ToLowerCopy(source.extension().wstring()));
+
+            std::error_code sizeError;
+            const uintmax_t byteSize = fs::file_size(source, sizeError);
+            char sizeText[64] = "unknown size";
+            if (!sizeError) {
+                if (byteSize >= (1ull << 20)) {
+                    snprintf(sizeText, sizeof(sizeText), "%.1f MB", static_cast<double>(byteSize) / (1024.0 * 1024.0));
+                } else {
+                    snprintf(sizeText, sizeof(sizeText), "%.1f KB", static_cast<double>(byteSize) / 1024.0);
+                }
+            }
+            State.pendingImportSourceLabel = source.filename().string() + "   " + sizeText;
+
+            // Start each import from the defaults rather than inheriting
+            // whatever the last model happened to need.
+            State.importOptions = MeshImportOptions();
             State.showImportPopup = true;
             State.wasImportJustOpened = true;
         }
@@ -237,7 +257,7 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
     const std::wstring scriptDllPath = renderer->m_scriptModuleHost.GetSourceDllPath();
     const std::wstring scriptStatusLabel = renderer->m_scriptModuleHost.GetStatusLabel();
     const uint32_t scriptStatusColor = ScriptModuleStatusColor(renderer->m_scriptModuleHost.GetStatus());
-    const bool coreModalOpen = State.showImportPopup || State.showRenamePopup || State.showDeleteItemConfirm || State.showNewScriptNamePopup || closePromptOpen || State.showSettingsWindow;
+    const bool coreModalOpen = State.showImportPopup || State.showRenamePopup || State.showDeleteItemConfirm || State.showNewScriptNamePopup || closePromptOpen || State.showSettingsWindow || State.showTexturePicker;
 
     bool deleteIsDown = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
     if (!coreModalOpen &&
@@ -297,8 +317,19 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
         }
     }
 
+    const float importPopupW = 470.0f;
+    const float importPopupH = State.pendingImportIsModel ? 648.0f : 192.0f;
+    const float importPopupX = (w - importPopupW) * 0.5f;
+    const float importPopupY = (h - importPopupH) * 0.5f;
+
     uiCtx.ClearModalRegion();
-    if (State.showScriptClassPicker) {
+    if (State.showTexturePicker) {
+        float pickerX = 0.0f, pickerY = 0.0f, pickerW = 0.0f, pickerH = 0.0f;
+        GetTexturePickerRect(w, h, pickerX, pickerY, pickerW, pickerH);
+        uiCtx.SetModalRegion(pickerX, pickerY, pickerW, pickerH);
+    } else if (State.showImportPopup) {
+        uiCtx.SetModalRegion(importPopupX, importPopupY, importPopupW, importPopupH);
+    } else if (State.showScriptClassPicker) {
         const float popupW = 220.0f;
         const float popupH = (std::min)(260.0f, 12.0f + static_cast<float>((std::max)(1, static_cast<int>(knownScriptClasses.size()))) * 28.0f);
         const float popupX = (std::min)(State.scriptClassPickerX, w - popupW - 10.0f);
@@ -2263,28 +2294,228 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
         }
     }
 
-    if (State.showImportPopup) {
-        float popupW = 350.0f; float popupH = 180.0f;
-        float popupX = (w - popupW) / 2.0f; float popupY = (h - popupH) / 2.0f;
+    // A finished import hands its result back here, on the UI thread.
+    if (State.activeImportJob && State.activeImportJob->completed.load(std::memory_order_acquire)) {
+        const std::shared_ptr<AssetImportJob> finished = State.activeImportJob;
+        State.activeImportJob.reset();
 
-        drawList.AddRectFilled(0, 0, w, h, 0xAA000000); 
+        if (finished->succeeded) {
+            const CatalystImport::MeshBuildStats& stats = finished->stats;
+            char summary[256];
+            if (stats.clusterCount > 0) {
+                snprintf(summary, sizeof(summary),
+                         "Imported %s - %.2fM tris, %u clusters over %u LOD levels, %.2fs",
+                         finished->displayName.c_str(),
+                         static_cast<double>(stats.sourceTriangles) / 1000000.0,
+                         stats.clusterCount,
+                         stats.clusterLevels,
+                         stats.parseSeconds + stats.buildSeconds);
+            } else if (stats.indexCount > 0) {
+                snprintf(summary, sizeof(summary),
+                         "Imported %s - %.2fM tris, %.2fM verts in %.2fs",
+                         finished->displayName.c_str(),
+                         static_cast<double>(stats.indexCount / 3) / 1000000.0,
+                         static_cast<double>(stats.vertexCount) / 1000000.0,
+                         stats.parseSeconds + stats.buildSeconds);
+            } else {
+                snprintf(summary, sizeof(summary), "Imported %s", finished->displayName.c_str());
+            }
+
+            // Whether the maps came across is the part worth saying out loud.
+            // Most marketplace models reference no textures at all, so silence
+            // here reads as an untextured import having quietly worked.
+            std::string statusText = summary;
+            const bool wasModelImport =
+                ToLowerCopy(fs::path(finished->importedPath).extension().wstring()) == L".catalystactor";
+            if (stats.texturesCopied > 0) {
+                statusText += " - " + std::to_string(stats.texturesCopied) +
+                              (stats.texturesCopied == 1 ? " texture" : " textures") +
+                              (stats.wroteMaterial ? " linked into a new material" : " copied");
+            } else if (wasModelImport) {
+                statusText += stats.texturesMissing > 0
+                    ? " - " + std::to_string(stats.texturesMissing) + " referenced texture(s) could not be found"
+                    : std::string(" - no textures found beside the model");
+            }
+            SetEditorStatus(statusText, 0xFF7ACB7A, 4200);
+
+            // An FBX carries its own idea of scale and up axis. Applying either
+            // silently would be worse than saying so, because a wrong guess is
+            // hard to spot until the asset is already in a scene.
+            if (stats.sourceWasFbx) {
+                const bool scaled = fabsf(stats.appliedUnitScale - 1.0f) > 0.0001f;
+                if (scaled || stats.appliedUpAxisConversion) {
+                    char notice[256];
+                    snprintf(notice, sizeof(notice),
+                             "%s declared %.4g cm per unit and %s; applied scale %.4g%s. Untick the source options to import it raw.",
+                             finished->displayName.c_str(),
+                             stats.fbxUnitScaleFactor,
+                             stats.fbxUpAxis == 0 ? "X-up" : (stats.fbxUpAxis == 2 ? "Z-up" : "Y-up"),
+                             stats.appliedUnitScale,
+                             stats.appliedUpAxisConversion ? " and rotated to Y-up" : "");
+                    SetEditorStatus(notice, 0xFF9FC8E8, 7000);
+                }
+            }
+
+            State.lastScanTime = 0;
+            State.showImportPopup = false;
+        } else {
+            SetEditorStatus("Import failed: " + (finished->error.empty() ? std::string("unknown error") : finished->error),
+                            0xFFE07A7A, 6000);
+        }
+    }
+
+    if (State.showImportPopup) {
+        const bool isModel = State.pendingImportIsModel;
+        const float popupW = importPopupW;
+        const float popupH = importPopupH;
+        const float popupX = importPopupX;
+        const float popupY = importPopupY;
+        const float left = popupX + 20.0f;
+        const float contentW = popupW - 40.0f;
+        const bool importRunning = static_cast<bool>(State.activeImportJob);
+
+        drawList.AddRectFilled(0, 0, w, h, 0xAA000000);
         drawList.AddRectFilled(popupX, popupY, popupW, popupH, 0xFF262626);
         drawList.AddRectFilled(popupX, popupY, popupW, 30.0f, 0xFF1C1C1C);
-        drawList.AddText(fontMgr, "Name Imported Asset", popupX + 15.0f, popupY + 20.0f, 0xFFE8E8E8);
-        drawList.AddText(fontMgr, "Asset Name:", popupX + 20.0f, popupY + 65.0f, 0xFF9E9E9E);
-        
-        uiCtx.TextInput("ImportNameInput", State.pendingImportName, popupX + 20.0f, popupY + 80.0f, popupW - 40.0f, 40.0f, State.isImportNameActive);
+        drawList.AddRectFilled(popupX, popupY, popupW, 3.0f, 0xFFE07020);
+        drawList.AddText(fontMgr, isModel ? "Import Model" : "Import Asset", popupX + 15.0f, popupY + 21.0f, 0xFFE8E8E8);
 
-        if (State.wasImportJustOpened) { State.isImportNameActive = true; State.wasImportJustOpened = false; }
-        if (uiCtx.Button("Cancel", popupX + 20.0f, popupY + 130.0f, 100.0f, 30.0f, 0xFF3D3D3D, 0xFF484848, 0xFF2C2C2C)) State.showImportPopup = false;
-        
-        if (uiCtx.Button("Import ", popupX + popupW - 120.0f, popupY + 130.0f, 100.0f, 30.0f, 0xFFE07020, 0xFFFF9020, 0xFFB05000)) {
-            if (!State.pendingImportName.empty()) {
-                std::wstring wNewName(State.pendingImportName.begin(), State.pendingImportName.end());
-                if (ImportAssetToProject(State.pendingImportPath, State.currentBrowserPath, wNewName)) {
-                    State.lastScanTime = 0;
-                    State.showImportPopup = false;
-                }
+        float cursorY = popupY + 42.0f;
+
+        drawList.AddText(fontMgr, FitTextToWidth(fontMgr, State.pendingImportSourceLabel, contentW),
+                         left, cursorY + 11.0f, 0xFF8C8C8C);
+        cursorY += 24.0f;
+
+        drawList.AddText(fontMgr, "Asset Name", left, cursorY + 13.0f, 0xFF9E9E9E);
+        cursorY += 18.0f;
+        uiCtx.TextInput("ImportNameInput", State.pendingImportName, left, cursorY, contentW, 32.0f, State.isImportNameActive);
+        cursorY += 42.0f;
+
+        if (State.wasImportJustOpened) {
+            State.isImportNameActive = true;
+            State.wasImportJustOpened = false;
+        }
+
+        if (isModel) {
+            MeshImportOptions& options = State.importOptions;
+
+            auto SectionHeader = [&](const std::string& title) {
+                drawList.AddRectFilled(left, cursorY + 5.0f, contentW, 1.0f, 0xFF3A3A3A);
+                drawList.AddText(fontMgr, title, left, cursorY + 25.0f, 0xFFE07020);
+                cursorY += 34.0f;
+            };
+
+            // Label on the left of the row, a control filling the right of it.
+            auto ChoiceRow = [&](const std::string& label, const std::string& value) {
+                drawList.AddText(fontMgr, label, left, cursorY + 17.0f, 0xFFD0D0D0);
+                return uiCtx.Button(value, left + contentW * 0.44f, cursorY, contentW * 0.56f, 24.0f,
+                                    0xFF333333, 0xFF454545, 0xFF262626);
+            };
+
+            SectionHeader("TRANSFORM");
+
+            uiCtx.DragFloat("Uniform Scale", options.uniformScale, 0.005f, left, cursorY, contentW, 24.0f, 0.44f);
+            // Dragging through zero would turn the model inside out.
+            if (options.uniformScale < 0.0001f) {
+                options.uniformScale = 0.0001f;
+            }
+            cursorY += 30.0f;
+
+            const bool isZUp = (options.upAxis == MeshUpAxis::Z);
+            if (ChoiceRow("Source Up Axis", isZUp ? "Z-up  (Blender, 3ds Max)" : "Y-up  (as authored)")) {
+                options.upAxis = isZUp ? MeshUpAxis::Y : MeshUpAxis::Z;
+            }
+            cursorY += 30.0f;
+
+            uiCtx.Checkbox("Center pivot on bounds", options.centerPivot, left, cursorY, 18.0f);
+            cursorY += 28.0f;
+
+            SectionHeader("GEOMETRY");
+
+            const char* normalLabel = "Import  (fill in where missing)";
+            if (options.normalMode == MeshNormalMode::Flat) {
+                normalLabel = "Flat  (hard edges)";
+            } else if (options.normalMode == MeshNormalMode::Smooth) {
+                normalLabel = "Smooth  (averaged)";
+            }
+            if (ChoiceRow("Normals", normalLabel)) {
+                options.normalMode = static_cast<MeshNormalMode>((static_cast<int>(options.normalMode) + 1) % 3);
+            }
+            cursorY += 30.0f;
+
+            uiCtx.Checkbox("Merge duplicate vertices", options.mergeDuplicateVertices, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Optimise draw order (tighter clusters)", options.optimizeForCache, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Generate tangents", options.generateTangents, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Build virtualised geometry (cluster LOD)", options.buildVirtualGeometry, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+
+            // Worth saying plainly: this is the setting that decides whether a
+            // dense model costs what is on screen or costs all of itself.
+            if (!options.buildVirtualGeometry) {
+                drawList.AddText(fontMgr, "Without it the whole mesh is drawn every frame.", left, cursorY + 12.0f, 0xFFB89050);
+            }
+            cursorY += 18.0f;
+
+            SectionHeader("ORIENTATION AND UVS");
+
+            uiCtx.Checkbox("Flip UVs vertically", options.flipUV, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Flip triangle winding", options.flipWinding, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Import vertex colours", options.importVertexColors, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Use the file's unit scale (FBX)", options.applySourceUnits, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+            uiCtx.Checkbox("Use the file's up axis (FBX)", options.applySourceUpAxis, left, cursorY, 18.0f);
+            cursorY += 26.0f;
+
+            // Flat shading gives every triangle its own three vertices, which
+            // is worth saying before someone waits on a dense model.
+            if (options.normalMode == MeshNormalMode::Flat) {
+                drawList.AddText(fontMgr, "Flat normals split every shared vertex.", left, cursorY + 12.0f, 0xFFB89050);
+            }
+        }
+
+        const float buttonY = popupY + popupH - 46.0f;
+
+        if (importRunning) {
+            drawList.AddText(fontMgr, "Importing...", left, buttonY + 21.0f, 0xFFE8E8E8);
+        } else {
+            if (uiCtx.Button("Cancel", left, buttonY, 100.0f, 30.0f, 0xFF3D3D3D, 0xFF484848, 0xFF2C2C2C)) {
+                State.showImportPopup = false;
+            }
+
+            if (isModel && uiCtx.Button("Reset", left + 110.0f, buttonY, 90.0f, 30.0f, 0xFF3D3D3D, 0xFF484848, 0xFF2C2C2C)) {
+                State.importOptions = MeshImportOptions();
+            }
+
+            if (uiCtx.Button("Import", popupX + popupW - 120.0f, buttonY, 100.0f, 30.0f, 0xFFE07020, 0xFFFF9020, 0xFFB05000) &&
+                !State.pendingImportName.empty()) {
+                auto job = std::make_shared<AssetImportJob>();
+                job->displayName = State.pendingImportName;
+                State.activeImportJob = job;
+
+                // Converting a dense mesh takes seconds, so it runs off the UI
+                // thread and the editor keeps drawing.
+                const std::wstring source = State.pendingImportPath;
+                const std::wstring destinationFolder = State.currentBrowserPath;
+                const std::wstring assetName = StringToWide(State.pendingImportName);
+                const MeshImportOptions options = State.importOptions;
+                std::thread([job, source, destinationFolder, assetName, options]() {
+                    std::wstring importedPath;
+                    std::string error;
+                    CatalystImport::MeshBuildStats stats;
+                    const bool succeeded = ImportAssetToProject(source, destinationFolder, assetName, options,
+                                                                &importedPath, &stats, &error);
+                    job->importedPath = importedPath;
+                    job->error = error;
+                    job->stats = stats;
+                    job->succeeded = succeeded;
+                    job->completed.store(true, std::memory_order_release);
+                }).detach();
             }
         }
     }
@@ -2527,6 +2758,9 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
                     ID3D12GraphicsCommandList* cmdList = renderer->m_commandList.Get();
 
                     Mesh* newMesh = new Mesh(device, cmdList, customData.Vertices.data(), customData.Vertices.size(), customData.Indices.data(), customData.Indices.size());
+                    newMesh->UploadClusters(device, cmdList, customData.Clusters,
+                                            customData.ClusterLevelCount, customData.BaseTriangleCount);
+                    renderer->DeferUploadBufferRelease(newMesh);
                     renderer->m_primitives[State.pendingAssetName] = newMesh;
                     
                     auto customAsset = std::make_shared<Asset>();
@@ -2564,4 +2798,5 @@ void EditorUI::DrawEditor(DXRenderer* renderer, float w, float h, float topH, fl
 
     // Drawn last so it sits above every other editor panel and popup.
     DrawSettingsWindow(renderer, w, h);
+    DrawTexturePicker(renderer, w, h);
 }

@@ -157,6 +157,14 @@
     <ClInclude Include="..\Lib\imgui\ImGuizmo.h" />
     <ClInclude Include="Resources\Material.h" />
     <ClInclude Include="Resources\Mesh.h" />
+    <ClInclude Include="Resources\FastObjParser.h" />
+    <ClInclude Include="Resources\Inflate.h" />
+    <ClInclude Include="Resources\FbxParser.h" />
+    <ClInclude Include="Resources\PolygonTriangulate.h" />
+    <ClInclude Include="Resources\MeshBuild.h" />
+    <ClInclude Include="Resources\MeshSimplify.h" />
+    <ClInclude Include="Resources\MeshletBuilder.h" />
+    <ClInclude Include="Resources\MeshImportOptions.h" />
     <ClInclude Include="Resources\ModelLoader.h" />
     <ClInclude Include="Resources\PakFile.h" />
     <ClInclude Include="Resources\PrimitiveGenerator.h" />
@@ -211,6 +219,13 @@
     </None>
     <ClCompile Include="Resources\Material.cpp" />
     <ClCompile Include="Resources\Mesh.cpp" />
+    <ClCompile Include="Resources\FastObjParser.cpp" />
+    <ClCompile Include="Resources\Inflate.cpp" />
+    <ClCompile Include="Resources\FbxParser.cpp" />
+    <ClCompile Include="Resources\PolygonTriangulate.cpp" />
+    <ClCompile Include="Resources\MeshBuild.cpp" />
+    <ClCompile Include="Resources\MeshSimplify.cpp" />
+    <ClCompile Include="Resources\MeshletBuilder.cpp" />
     <ClCompile Include="Resources\ModelLoader.cpp" />
     <ClCompile Include="Resources\PakFile.cpp" />
     <ClCompile Include="Resources\PrimitiveGenerator.cpp" />

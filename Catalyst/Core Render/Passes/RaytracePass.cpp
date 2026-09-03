@@ -416,7 +416,10 @@ ID3D12Resource* RaytracePass::EnsureBlas(ID3D12GraphicsCommandList4* commandList
     geometry.Triangles.VertexCount  = vbv.SizeInBytes / vbv.StrideInBytes;
     geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT; // position is first in Vertex
     geometry.Triangles.IndexBuffer  = ibv.BufferLocation;
-    geometry.Triangles.IndexCount   = ibv.SizeInBytes / sizeof(uint32_t);
+    // Base level only: the index buffer holds every LOD level of a clustered
+    // mesh, and putting the coarse copies into the acceleration structure would
+    // give rays duplicate surfaces to hit.
+    geometry.Triangles.IndexCount   = mesh->GetBaseIndexCount();
     geometry.Triangles.IndexFormat  = DXGI_FORMAT_R32_UINT;
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};

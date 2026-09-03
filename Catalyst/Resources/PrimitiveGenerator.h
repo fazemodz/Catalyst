@@ -7,6 +7,15 @@
 struct MeshData {
     std::vector<Vertex> Vertices;
     std::vector<uint32_t> Indices;
+
+    // Virtualised-geometry data. Empty for procedural primitives and for models
+    // imported with the option turned off, in which case the renderer falls
+    // back to drawing the whole index buffer.
+    std::vector<MeshCluster> Clusters;
+    uint32_t ClusterLevelCount = 0;
+    uint32_t BaseTriangleCount = 0;
+
+    bool HasClusters() const { return !Clusters.empty(); }
 };
 
 class PrimitiveGenerator {

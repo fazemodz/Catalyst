@@ -5,4 +5,5 @@
   </Configurations>
   <Project Path="Catalyst Launcher/Catalyst Launcher.csproj" />
   <Project Path="Catalyst/Catalyst.vcxproj" Id="20e0c554-4f92-4eb3-845c-5085241a3b84" />
+  <Project Path="Catalyst/Catalyst.Native/Catalyst.Native.vcxproj" Id="e125c288-2db4-4b0e-b91e-e4107ac3f3a7" />
 </Solution>

@@ -12,7 +12,9 @@ void BindlessManager::Initialize(ID3D12Device* device, UINT maxTextures) {
     m_descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 }
 
-int BindlessManager::AddTexture(ID3D12Device* device, ID3D12Resource* texture) {
+int BindlessManager::AddTexture(ID3D12Device* device,
+                                ID3D12Resource* texture,
+                                const D3D12_SHADER_RESOURCE_VIEW_DESC* srvDesc) {
     if (!texture) {
         return -1;
     }
@@ -30,14 +32,29 @@ int BindlessManager::AddTexture(ID3D12Device* device, ID3D12Resource* texture) {
     D3D12_CPU_DESCRIPTOR_HANDLE handle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
     handle.ptr += slot * m_descriptorSize;
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = texture->GetDesc().Format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Texture2D.MipLevels = 1;
+    if (srvDesc != nullptr) {
+        device->CreateShaderResourceView(texture, srvDesc, handle);
+        return static_cast<int>(slot);
+    }
 
-    device->CreateShaderResourceView(texture, &srvDesc, handle);
+    D3D12_SHADER_RESOURCE_VIEW_DESC defaultDesc = {};
+    defaultDesc.Format = texture->GetDesc().Format;
+    defaultDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    defaultDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    defaultDesc.Texture2D.MipLevels = 1;
+
+    device->CreateShaderResourceView(texture, &defaultDesc, handle);
     return static_cast<int>(slot);
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE BindlessManager::GetGpuHandle(int index) const {
+    D3D12_GPU_DESCRIPTOR_HANDLE handle = {};
+    if (!m_srvHeap || index < 0 || static_cast<UINT>(index) >= m_maxTextures) {
+        return handle;
+    }
+    handle = m_srvHeap->GetGPUDescriptorHandleForHeapStart();
+    handle.ptr += static_cast<UINT64>(index) * m_descriptorSize;
+    return handle;
 }
 
 void BindlessManager::ReleaseTexture(int index) {

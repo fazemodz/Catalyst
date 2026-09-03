@@ -4,6 +4,7 @@
 #include "Common.h"
 #include "Mesh.h" 
 #include "../ShaderCompiler.h"
+#include <algorithm>
 
 void ShadowPass::Initialize(ID3D12Device* device) {
     CreateResources(device);
@@ -14,7 +15,7 @@ void ShadowPass::CreateResources(ID3D12Device* device) {
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {}; dsvHeapDesc.NumDescriptors = 1; dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; ThrowIfFailed(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap)));
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {}; srvHeapDesc.NumDescriptors = 1; srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; ThrowIfFailed(device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_shadowSrvHeap)));
 
-    D3D12_RESOURCE_DESC texDesc = {}; texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; texDesc.Width = 2048; texDesc.Height = 2048; texDesc.DepthOrArraySize = 1; texDesc.MipLevels = 1; texDesc.Format = DXGI_FORMAT_R32_TYPELESS; texDesc.SampleDesc.Count = 1; texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_RESOURCE_DESC texDesc = {}; texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; texDesc.Width = kShadowMapResolution; texDesc.Height = kShadowMapResolution; texDesc.DepthOrArraySize = 1; texDesc.MipLevels = 1; texDesc.Format = DXGI_FORMAT_R32_TYPELESS; texDesc.SampleDesc.Count = 1; texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     D3D12_CLEAR_VALUE optClear = {}; optClear.Format = DXGI_FORMAT_D32_FLOAT; optClear.DepthStencil.Depth = 1.0f; optClear.DepthStencil.Stencil = 0;
     D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_DEFAULT };
     ThrowIfFailed(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &optClear, IID_PPV_ARGS(&m_shadowMap)));
@@ -51,8 +52,8 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
     commandList->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsv);
     commandList->ClearDepthStencilView(shadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    D3D12_VIEWPORT shadowVp = { 0.0f, 0.0f, 2048.0f, 2048.0f, 0.0f, 1.0f };
-    D3D12_RECT shadowSc = { 0, 0, 2048, 2048 };
+    D3D12_VIEWPORT shadowVp = { 0.0f, 0.0f, static_cast<float>(kShadowMapResolution), static_cast<float>(kShadowMapResolution), 0.0f, 1.0f };
+    D3D12_RECT shadowSc = { 0, 0, static_cast<LONG>(kShadowMapResolution), static_cast<LONG>(kShadowMapResolution) };
     commandList->RSSetViewports(1, &shadowVp);
     commandList->RSSetScissorRects(1, &shadowSc);
 
@@ -61,7 +62,10 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     Mesh* lastBoundMesh = nullptr;
 
-    for (int i = 0; i < gameObjects.size(); i++) {
+    // The shared constant buffer has a fixed slot count; casting more shadows
+    // than it can describe would write past the end of the mapping.
+    const size_t maxCasters = (std::min)(gameObjects.size(), static_cast<size_t>(kMaxShadowCasters));
+    for (size_t i = 0; i < maxCasters; i++) {
         const GameObject& obj = gameObjects[i]; 
         if (!obj.enabled) continue;
         if (obj.type == ObjectType::Skybox || obj.type == ObjectType::PostProcessVolume || obj.type == ObjectType::Light) continue; 
@@ -87,7 +91,10 @@ void ShadowPass::Render(ID3D12GraphicsCommandList* commandList, const std::vecto
         memcpy(pCbvDataBegin + (i * objSize), &cbData, sizeof(cbData)); 
         commandList->SetGraphicsRootConstantBufferView(0, cbAddress + (i * objSize));
 
-        commandList->DrawIndexedInstanced(meshToDraw->GetIndexCount(), 1, 0, 0, 0);
+        // Level 0 only. Drawing the whole index buffer would stamp every LOD
+        // level into the same depth map, and the coarser surfaces would poke
+        // through the fine one and shadow it.
+        commandList->DrawIndexedInstanced(meshToDraw->GetBaseIndexCount(), 1, 0, 0, 0);
     }
 
     shadowBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;

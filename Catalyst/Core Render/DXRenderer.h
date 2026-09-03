@@ -283,6 +283,17 @@ private:
     void CreateDepthBuffer();
     void CreateConstantBuffer();
     void FlushGPU();
+
+    // Takes ownership of a freshly created mesh's staging buffers and drops
+    // them once the GPU has consumed the copy. Meshes built mid-frame record
+    // their copy into the frame's command list, so they cannot free the staging
+    // memory themselves - and on a dense mesh that is hundreds of megabytes
+    // held for nothing.
+    void DeferUploadBufferRelease(Mesh* mesh);
+
+    // The one directional light the scene is lit by. Kept here so the shadow
+    // pass and the shading pass cannot disagree about where it points.
+    DirectX::XMFLOAT3 m_sunDirection = {-0.72f, -0.62f, 0.31f};
     Texture* LoadTextureAsset(const std::wstring& path);
     void ReleaseCachedTexture(const std::shared_ptr<Texture>& texture);
     const RaytracePass& GetRaytracePass() const { return m_raytracePass; }
@@ -339,6 +350,27 @@ private:
     // allocator and per-frame buffers are only reused once it has retired.
     UINT64 m_frameFenceValues[FrameCount] = {};
     void WaitForFrame(UINT frameIndex);
+
+    struct PendingUploadRelease {
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> stagingBuffers;
+        UINT64 fenceValue = 0;
+    };
+    std::vector<PendingUploadRelease> m_pendingUploadReleases;
+    void RetireCompletedUploadBuffers();
+
+    // Slot the shadow map's SRV occupies in the bindless heap. The shading pass
+    // can only reach descriptors in the heap that is bound, and that is always
+    // the bindless one.
+    int m_shadowMapBindlessIndex = -1;
+
+    // Light-space transform the shadow map was rendered with. The shading pass
+    // has to use exactly this or the lookup lands in the wrong place.
+    DirectX::XMMATRIX m_shadowLightMatrix = DirectX::XMMatrixIdentity();
+
+    // Fits the light's orthographic frustum around everything that can cast,
+    // and returns the matrix both passes use.
+    DirectX::XMMATRIX BuildSunLightMatrix(float& outWorldTexelSize) const;
+    void RenderShadowMap();
     HANDLE m_fenceEvent = nullptr;
     UINT m_frameIndex = 0;
     ULONGLONG m_lastFrameTick = 0;

@@ -58,6 +58,13 @@ struct GlobalBufferData {
     float lightIntensity;
     DirectX::XMFLOAT3 cameraPos;
     float padding;
+
+    // x: one shadow texel in UV, for spreading the PCF taps.
+    // y: one shadow texel in world units, which is the scale the normal-offset
+    //    bias has to work in to kill acne without detaching contact shadows.
+    // z: 1 when a shadow map is bound, 0 to skip sampling entirely.
+    // w: spare.
+    DirectX::XMFLOAT4 shadowParams;
 };
 
 // The exact structure DirectX 12 expects inside an ExecuteIndirect buffer
